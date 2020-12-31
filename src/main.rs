@@ -1,6 +1,7 @@
 #![feature(async_closure)]
 
 extern crate mozaic_core;
+extern crate planetwars_rules;
 extern crate warp;
 #[macro_use]
 extern crate serde;

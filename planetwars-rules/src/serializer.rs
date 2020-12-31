@@ -1,5 +1,5 @@
-use super::pw_protocol as proto;
-use super::pw_rules::{Expedition, Planet, PlanetWars};
+use super::protocol as proto;
+use super::rules::{Expedition, Planet, PlanetWars};
 
 /// Serialize given gamestate
 pub fn serialize(state: &PlanetWars) -> proto::State {

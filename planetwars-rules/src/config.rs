@@ -4,8 +4,8 @@ use std::io::Read;
 
 use serde_json;
 
-use super::pw_protocol as proto;
-use super::pw_rules::*;
+use super::protocol as proto;
+use super::rules::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {

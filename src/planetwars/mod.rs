@@ -8,19 +8,15 @@ use serde_json;
 use std::collections::HashMap;
 use std::convert::TryInto;
 
-mod pw_config;
-mod pw_protocol;
-mod pw_rules;
-mod pw_serializer;
+pub use planetwars_rules::config::{Config, Map};
 
-pub use pw_config::{Config, Map};
-
-use pw_protocol::{self as proto, CommandError};
-use pw_rules::Dispatch;
+use planetwars_rules::protocol as proto;
+use planetwars_rules::rules::{PlanetWars as PwState, Dispatch};
+use planetwars_rules::serializer as pw_serializer;
 
 pub struct Planetwars {
     match_ctx: MatchCtx,
-    state: pw_rules::PlanetWars,
+    state: PwState,
     planet_map: HashMap<String, usize>,
 }
 
@@ -127,27 +123,27 @@ impl Planetwars {
         &self,
         player_num: usize,
         mv: &proto::Command,
-    ) -> Result<Dispatch, CommandError> {
+    ) -> Result<Dispatch, proto::CommandError> {
         let origin_id = *self
             .planet_map
             .get(&mv.origin)
-            .ok_or(CommandError::OriginDoesNotExist)?;
+            .ok_or(proto::CommandError::OriginDoesNotExist)?;
 
         let target_id = *self
             .planet_map
             .get(&mv.destination)
-            .ok_or(CommandError::DestinationDoesNotExist)?;
+            .ok_or(proto::CommandError::DestinationDoesNotExist)?;
 
         if self.state.planets[origin_id].owner() != Some(player_num) {
-            return Err(CommandError::OriginNotOwned);
+            return Err(proto::CommandError::OriginNotOwned);
         }
 
         if self.state.planets[origin_id].ship_count() < mv.ship_count {
-            return Err(CommandError::NotEnoughShips);
+            return Err(proto::CommandError::NotEnoughShips);
         }
 
         if mv.ship_count == 0 {
-            return Err(CommandError::ZeroShipMove);
+            return Err(proto::CommandError::ZeroShipMove);
         }
 
         Ok(Dispatch {
