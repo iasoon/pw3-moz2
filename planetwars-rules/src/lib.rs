@@ -50,7 +50,7 @@ impl PlanetWars {
         serializer::serialize_rotated(&self.state, player_num)
     }
 
-    pub fn state<'a>(&self) -> &'a PwState {
+    pub fn state<'a>(&'a self) -> &'a PwState {
         &self.state
     }
 
@@ -102,6 +102,8 @@ impl PlanetWars {
     }
 
     /// Execute a dispatch.
+    /// This assumes the dispatch is valid. You should check this yourself
+    /// or use `parse_command` to obtain a valid dispatch.
     pub fn execute_dispatch(&mut self, dispatch: &Dispatch) {
         self.state.dispatch(dispatch);
     }
