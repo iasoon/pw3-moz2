@@ -1,6 +1,6 @@
 /// The planet wars game rules.
 #[derive(Debug)]
-pub struct PlanetWars {
+pub struct PwState {
     pub players: Vec<Player>,
     pub planets: Vec<Planet>,
     pub expeditions: Vec<Expedition>,
@@ -48,7 +48,7 @@ pub struct Dispatch {
     pub ship_count: u64,
 }
 
-impl PlanetWars {
+impl PwState {
     pub fn dispatch(&mut self, dispatch: &Dispatch) {
         let distance = self.planets[dispatch.origin]
             .distance(&self.planets[dispatch.target]);

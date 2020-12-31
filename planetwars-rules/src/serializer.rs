@@ -1,24 +1,24 @@
 use super::protocol as proto;
-use super::rules::{Expedition, Planet, PlanetWars};
+use super::rules::{Expedition, Planet, PwState};
 
 /// Serialize given gamestate
-pub fn serialize(state: &PlanetWars) -> proto::State {
+pub fn serialize(state: &PwState) -> proto::State {
     serialize_rotated(state, 0)
 }
 
 /// Serialize given gamestate with player numbers rotated by given offset.
-pub fn serialize_rotated(state: &PlanetWars, offset: usize) -> proto::State {
+pub fn serialize_rotated(state: &PwState, offset: usize) -> proto::State {
     let serializer = Serializer::new(state, offset);
     serializer.serialize_state()
 }
 
 struct Serializer<'a> {
-    state: &'a PlanetWars,
+    state: &'a PwState,
     player_num_offset: usize,
 }
 
 impl<'a> Serializer<'a> {
-    fn new(state: &'a PlanetWars, offset: usize) -> Self {
+    fn new(state: &'a PwState, offset: usize) -> Self {
         Serializer {
             state: state,
             player_num_offset: offset,

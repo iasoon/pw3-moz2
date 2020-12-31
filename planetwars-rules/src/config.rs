@@ -14,16 +14,16 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn create_game(&self, clients: usize) -> PlanetWars {
-        let planets = self.load_map(clients);
-        let players = (0..clients)
-            .map(|client_id| Player {
-                id: client_id,
+    pub fn create_state(&self, num_players: usize) -> PwState {
+        let planets = self.load_map(num_players);
+        let players = (0..num_players)
+            .map(|player_num| Player {
+                id: player_num + 1,
                 alive: true,
             })
             .collect();
 
-        PlanetWars {
+        PwState {
             players: players,
             planets: planets,
             expeditions: Vec::new(),
@@ -45,10 +45,9 @@ impl Config {
                 let owner = planet.owner.and_then(|owner_num| {
                     // in the current map format, player numbers start at 1.
                     // TODO: we might want to change this.
-                    let player_num = owner_num - 1;
                     // ignore players that are not in the game
-                    if player_num < num_players {
-                        Some(player_num)
+                    if owner_num > 0 && owner_num <= num_players {
+                        Some(owner_num - 1)
                     } else {
                         None
                     }

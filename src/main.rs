@@ -58,7 +58,7 @@ async fn run_match(mut clients: Vec<ClientHandle>, mut match_ctx: MatchCtx) {
     };
 
     future::join_all(players).await;
-    let pw_match = planetwars::Planetwars::create(match_ctx, config);
+    let pw_match = planetwars::PwMatch::create(match_ctx, config);
     pw_match.run().await;
     println!("match done");
 }

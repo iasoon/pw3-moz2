@@ -5,61 +5,53 @@ use tokio::time::Duration;
 
 use serde_json;
 
-use std::collections::HashMap;
 use std::convert::TryInto;
 
 pub use planetwars_rules::config::{Config, Map};
 
 use planetwars_rules::protocol as proto;
-use planetwars_rules::rules::{PlanetWars as PwState, Dispatch};
 use planetwars_rules::serializer as pw_serializer;
+use planetwars_rules::{PlanetWars, PwConfig};
 
-pub struct Planetwars {
+pub struct PwMatch {
     match_ctx: MatchCtx,
-    state: PwState,
-    planet_map: HashMap<String, usize>,
+    match_state: PlanetWars,
 }
 
-impl Planetwars {
-    pub fn create(match_ctx: MatchCtx, config: Config) -> Self {
+impl PwMatch {
+    pub fn create(match_ctx: MatchCtx, config: PwConfig) -> Self {
         // TODO: this is kind of hacked together at the moment
-        let state = config.create_game(match_ctx.players().len());
+        let match_state = PlanetWars::create(config, match_ctx.players().len());
 
-        let planet_map = state
-            .planets
-            .iter()
-            .map(|p| (p.name.clone(), p.id))
-            .collect();
 
-        Self {
-            state,
-            planet_map,
+
+        PwMatch {
+            match_state,
             match_ctx,
         }
     }
 
     pub async fn run(mut self) {
-        while !self.state.is_finished() {
+        while !self.match_state.is_finished() {
             let player_messages = self.prompt_players().await;
 
-            self.state.repopulate();
             for (player_id, turn) in player_messages {
                 self.execute_action(player_id, turn);
             }
-            self.state.step();
+            self.match_state.step();
 
             // Log state
-            let state = pw_serializer::serialize(&self.state);
+            let state = self.match_state.serialize_state();
             self.match_ctx.emit(serde_json::to_string(&state).unwrap());
         }
     }
 
     async fn prompt_players(&mut self) -> Vec<(usize, RequestResult<Vec<u8>>)> {
         // borrow these outside closure to make the borrow checker happy
-        let state = &self.state;
+        let state = self.match_state.state();
         let match_ctx = &mut self.match_ctx;
 
-        self.state
+        self.match_state.state()
             .players
             .iter()
             .filter(|p| p.alive)
@@ -79,7 +71,7 @@ impl Planetwars {
             .await
     }
 
-    fn execute_action<'a>(
+    fn execute_action(
         &mut self,
         player_num: usize,
         turn: RequestResult<Vec<u8>>,
@@ -100,18 +92,11 @@ impl Planetwars {
             .commands
             .into_iter()
             .map(|command| {
-                match self.check_valid_command(player_num, &command) {
-                    Ok(dispatch) => {
-                        self.state.dispatch(&dispatch);
-                        proto::PlayerCommand {
-                            command,
-                            error: None,
-                        }
-                    }
-                    Err(error) => proto::PlayerCommand {
-                        command,
-                        error: Some(error),
-                    },
+                let res = self.match_state
+                    .execute_command(player_num, &command);
+                proto::PlayerCommand {
+                    command,
+                    error: res.err(),
                 }
             })
             .collect();
@@ -119,37 +104,4 @@ impl Planetwars {
         return proto::PlayerAction::Commands(commands);
     }
 
-    fn check_valid_command(
-        &self,
-        player_num: usize,
-        mv: &proto::Command,
-    ) -> Result<Dispatch, proto::CommandError> {
-        let origin_id = *self
-            .planet_map
-            .get(&mv.origin)
-            .ok_or(proto::CommandError::OriginDoesNotExist)?;
-
-        let target_id = *self
-            .planet_map
-            .get(&mv.destination)
-            .ok_or(proto::CommandError::DestinationDoesNotExist)?;
-
-        if self.state.planets[origin_id].owner() != Some(player_num) {
-            return Err(proto::CommandError::OriginNotOwned);
-        }
-
-        if self.state.planets[origin_id].ship_count() < mv.ship_count {
-            return Err(proto::CommandError::NotEnoughShips);
-        }
-
-        if mv.ship_count == 0 {
-            return Err(proto::CommandError::ZeroShipMove);
-        }
-
-        Ok(Dispatch {
-            origin: origin_id,
-            target: target_id,
-            ship_count: mv.ship_count,
-        })
-    }
 }
