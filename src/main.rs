@@ -8,11 +8,12 @@ mod planetwars;
 use mozaic_core::{Token, GameServer, MatchCtx};
 
 use std::convert::Infallible;
-use warp::reply::{json,Reply};
+use warp::reply::{json,Reply,Response};
 use warp::Filter;
 use serde::{Serialize,Deserialize};
 
 use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 
 use hex::FromHex;
 use rand::Rng;
@@ -22,7 +23,7 @@ struct MatchConfig {
     client_tokens: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Player {
     name: String,
     #[serde(with = "hex")]
@@ -52,8 +53,9 @@ impl GameManager {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Lobby {
+    id: String,
     name: String,
     public: bool,
     match_config: planetwars::Config,
@@ -64,6 +66,7 @@ struct Lobby {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct StrippedLobby {
+    id: String,
     name: String,
     public: bool,
     match_config: planetwars::Config,
@@ -77,9 +80,11 @@ struct LobbyConfig {
     match_config: planetwars::Config,
 }
 
-impl Lobby {
-    pub fn from_config(config: LobbyConfig) -> Self {
-        Self {
+impl From<LobbyConfig> for Lobby {
+    fn from(config: LobbyConfig) -> Lobby {
+        let id: [u8; 16] = rand::thread_rng().gen();
+        Lobby {
+            id: hex::encode(id),
             name: config.name,
             public: config.public,
             match_config: config.match_config,
@@ -89,22 +94,35 @@ impl Lobby {
     }
 }
 
+impl From<Lobby> for StrippedLobby {
+    fn from(lobby: Lobby) -> StrippedLobby {
+        StrippedLobby {
+            id: lobby.id,
+            name: lobby.name,
+            public: lobby.public,
+            match_config: lobby.match_config,
+            players: lobby.players,
+        }
+    }
+}
+
 struct LobbyManager {
     game_manager: Arc<Mutex<GameManager>>,
-    lobbies: Vec<Lobby>
+    lobbies: HashMap<String, Lobby>
 }
 
 impl LobbyManager {
     pub fn new(game_manager: Arc<Mutex<GameManager>>) -> Self {
         Self {
             game_manager,
-            lobbies: vec![],
+            lobbies: HashMap::new(),
         }
     }
 
-    pub fn create_lobby(&mut self, config: LobbyConfig) {
-        let lobby = Lobby::from_config(config);
-        self.lobbies.push(lobby);
+    pub fn create_lobby(&mut self, config: LobbyConfig) -> Lobby {
+        let lobby: Lobby = config.into();
+        self.lobbies.insert(lobby.id.clone(), lobby.clone());
+        lobby
     }
 }
 
@@ -154,15 +172,32 @@ fn create_lobby(
     lobby_config: LobbyConfig,
 ) -> impl Reply {
     let mut manager = mgr.lock().unwrap();
-    manager.create_lobby(lobby_config);
-    return "sure bro";
+    let lobby = manager.create_lobby(lobby_config);
+    json(&lobby)
 }
 
 fn get_lobbies(
     mgr: Arc<Mutex<LobbyManager>>,
 ) -> impl Reply {
     let manager = mgr.lock().unwrap();
-    return json(&manager.lobbies.iter().filter(|x| x.public).collect::<Vec<_>>());
+    return json(&manager.lobbies.values().filter_map(|lobby| {
+        if lobby.public {
+            Some((*lobby).clone().into())
+        } else {
+            None
+        }
+    }).collect::<Vec<StrippedLobby>>());
+}
+
+fn get_lobby_by_id(
+    id: String,
+    mgr: Arc<Mutex<LobbyManager>>,
+) -> Response {
+    let manager = mgr.lock().unwrap();
+    match manager.lobbies.get(&id) {
+        Some(lobby) => json(&lobby).into_response(),
+        None => warp::http::StatusCode::NOT_FOUND.into_response()
+    }
 }
 
 #[tokio::main]
@@ -180,7 +215,7 @@ async fn main() {
         .and(warp::body::json())
         .map(create_match);
 
-    let new_lobby_route = warp::path("lobbies")
+    let post_lobby_route = warp::path("lobbies")
         .and(warp::post())
         .and(with_lobby_manager(lobby_manager.clone()))
         .and(warp::body::json())
@@ -191,7 +226,13 @@ async fn main() {
         .and(with_lobby_manager(lobby_manager.clone()))
         .map(get_lobbies);
 
-    let routes = matches_route.or(new_lobby_route)
+    let get_lobby_id_route = warp::path("lobbies")
+        .and(warp::path::param())
+        .and(with_lobby_manager(lobby_manager.clone()))
+        .map(get_lobby_by_id);
+
+    let routes = matches_route.or(post_lobby_route)
+                              .or(get_lobby_id_route)
                               .or(get_lobby_route);
 
     warp::serve(routes).run(([127, 0, 0, 1], 3000)).await;
