@@ -1,13 +1,5 @@
 #![feature(async_closure)]
 
-extern crate mozaic_core;
-extern crate planetwars_rules;
-extern crate warp;
-#[macro_use]
-extern crate serde;
-extern crate futures;
-extern crate serde_json;
-
 use mozaic_core::client_manager::ClientHandle;
 use futures::future;
 
@@ -16,8 +8,9 @@ mod planetwars;
 use mozaic_core::{Token, GameServer, MatchCtx};
 
 use std::convert::Infallible;
-use warp::reply::{json,Json,Reply};
+use warp::reply::{json,Reply};
 use warp::Filter;
+use serde::{Serialize,Deserialize};
 
 use std::sync::{Arc, Mutex};
 
@@ -30,10 +23,17 @@ struct MatchConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct LobbyConfig {
+struct Player {
     name: String,
-    max_players: usize,
-    autostart: bool,
+    #[serde(with = "hex")]
+    token: Token,
+    ready: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct StrippedPlayer {
+    name: String,
+    ready: bool,
 }
 
 struct GameManager {
@@ -55,9 +55,38 @@ impl GameManager {
 #[derive(Serialize, Deserialize, Debug)]
 struct Lobby {
     name: String,
-    max_players: usize,
-    autostart: bool,
-    //TODO: connections/players
+    public: bool,
+    match_config: planetwars::Config,
+    players: Vec<Player>,
+    #[serde(with = "hex")]
+    lobby_token: Token
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct StrippedLobby {
+    name: String,
+    public: bool,
+    match_config: planetwars::Config,
+    players: Vec<Player>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct LobbyConfig {
+    name: String,
+    public: bool,
+    match_config: planetwars::Config,
+}
+
+impl Lobby {
+    pub fn from_config(config: LobbyConfig) -> Self {
+        Self {
+            name: config.name,
+            public: config.public,
+            match_config: config.match_config,
+            players: vec![],
+            lobby_token: rand::thread_rng().gen(),
+        }
+    }
 }
 
 struct LobbyManager {
@@ -74,11 +103,7 @@ impl LobbyManager {
     }
 
     pub fn create_lobby(&mut self, config: LobbyConfig) {
-        let lobby = Lobby {
-            name: config.name,
-            max_players: config.max_players,
-            autostart: config.autostart,
-        };
+        let lobby = Lobby::from_config(config);
         self.lobbies.push(lobby);
     }
 }
@@ -137,7 +162,7 @@ fn get_lobbies(
     mgr: Arc<Mutex<LobbyManager>>,
 ) -> impl Reply {
     let manager = mgr.lock().unwrap();
-    return json(&manager.lobbies);
+    return json(&manager.lobbies.iter().filter(|x| x.public).collect::<Vec<_>>());
 }
 
 #[tokio::main]
@@ -160,6 +185,7 @@ async fn main() {
         .and(with_lobby_manager(lobby_manager.clone()))
         .and(warp::body::json())
         .map(create_lobby);
+
     let get_lobby_route = warp::path("lobbies")
         .and(warp::get())
         .and(with_lobby_manager(lobby_manager.clone()))
