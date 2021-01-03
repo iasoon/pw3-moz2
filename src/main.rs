@@ -217,6 +217,40 @@ fn get_lobby_by_id(
     }
 }
 
+fn update_lobby_by_id(
+    id: String,
+    mgr: Arc<Mutex<LobbyManager>>,
+    authorization: Option<String>,
+    lobby_conf: LobbyConfig,
+) -> Response {
+    let mut manager = mgr.lock().unwrap();
+    match manager.lobbies.get(&id.to_lowercase()) {
+        Some(lobby) => {
+            if authorization.is_none() {
+                return warp::http::StatusCode::UNAUTHORIZED.into_response();
+            } else {
+                let bearer_token = authorization.unwrap().to_lowercase();
+                let token_string = bearer_token.strip_prefix("bearer ");
+                if token_string.is_none() {
+                    return warp::http::StatusCode::UNAUTHORIZED.into_response();
+                }
+                let token_opt = Token::from_hex(token_string.unwrap());
+                if token_opt.is_err() || token_opt.unwrap() != lobby.lobby_token {
+                    return warp::http::StatusCode::UNAUTHORIZED.into_response();
+                } else {
+                    let mut new_lobby = lobby.clone();
+                    new_lobby.name = lobby_conf.name;
+                    new_lobby.public = lobby_conf.public;
+                    new_lobby.match_config = lobby_conf.match_config;
+                    manager.lobbies.insert(new_lobby.id.to_lowercase(), new_lobby);
+                    return warp::http::StatusCode::OK.into_response();
+                }
+            }
+        },
+        None => warp::http::StatusCode::NOT_FOUND.into_response()
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let game_server = GameServer::new();
@@ -253,9 +287,19 @@ async fn main() {
         .and(warp::header::optional::<String>("authorization"))
         .map(get_lobby_by_id);
 
+    let put_lobby_id_route = warp::path("lobbies")
+        .and(warp::path::param())
+        .and(warp::path::end())
+        .and(warp::put())
+        .and(with_lobby_manager(lobby_manager.clone()))
+        .and(warp::header::optional::<String>("authorization"))
+        .and(warp::body::json())
+        .map(update_lobby_by_id);
+
     let routes = matches_route.or(post_lobby_route)
                               .or(get_lobby_id_route)
-                              .or(get_lobby_route);
+                              .or(get_lobby_route)
+                              .or(put_lobby_id_route);
 
     warp::serve(routes).run(([127, 0, 0, 1], 3000)).await;
 }
