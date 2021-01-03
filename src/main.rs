@@ -70,7 +70,7 @@ struct StrippedLobby {
     name: String,
     public: bool,
     match_config: planetwars::Config,
-    players: Vec<Player>,
+    players: Vec<StrippedPlayer>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -101,7 +101,16 @@ impl From<Lobby> for StrippedLobby {
             name: lobby.name,
             public: lobby.public,
             match_config: lobby.match_config,
-            players: lobby.players,
+            players: lobby.players.iter().map(|p| StrippedPlayer::from(p.clone())).collect(),
+        }
+    }
+}
+
+impl From<Player> for StrippedPlayer {
+    fn from(player: Player) -> StrippedPlayer {
+        StrippedPlayer {
+            name: player.name,
+            ready: player.ready,
         }
     }
 }
@@ -212,16 +221,11 @@ fn get_lobbies(
 fn get_lobby_by_id(
     id: String,
     mgr: Arc<Mutex<LobbyManager>>,
-    authorization: Option<String>,
 ) -> Response {
     let manager = mgr.lock().unwrap();
     match manager.lobbies.get(&id.to_lowercase()) {
         Some(lobby) => {
-            if lobby.authorize_header(authorization) {
-                json(&lobby).into_response()
-            } else {
-                json(&StrippedLobby::from(lobby.clone())).into_response()
-            }
+            json(&StrippedLobby::from(lobby.clone())).into_response()
         },
         None => warp::http::StatusCode::NOT_FOUND.into_response()
     }
@@ -270,6 +274,21 @@ fn delete_lobby_by_id(
     }
 }
 
+fn add_player_to_lobby(
+    id: String,
+    mgr: Arc<Mutex<LobbyManager>>,
+    player: Player,
+) -> Response {
+    let mut manager = mgr.lock().unwrap();
+    match manager.lobbies.get_mut(&id.to_lowercase()) {
+        Some(lobby) => {
+            lobby.players.push(player);
+            return warp::http::StatusCode::OK.into_response();
+        },
+        None => warp::http::StatusCode::NOT_FOUND.into_response()
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let game_server = GameServer::new();
@@ -285,28 +304,31 @@ async fn main() {
         .and(warp::body::json())
         .map(create_match);
 
-    let post_lobby_route = warp::path("lobbies")
+    // POST /lobbies
+    let post_lobbies_route = warp::path("lobbies")
         .and(warp::path::end())
         .and(warp::post())
         .and(with_lobby_manager(lobby_manager.clone()))
         .and(warp::body::json())
         .map(create_lobby);
 
-    let get_lobby_route = warp::path("lobbies")
+    // GET /lobbies
+    let get_lobbies_route = warp::path("lobbies")
         .and(warp::path::end())
         .and(warp::get())
         .and(with_lobby_manager(lobby_manager.clone()))
         .map(get_lobbies);
 
-    let get_lobby_id_route = warp::path("lobbies")
+    // GET /lobbies/<id>
+    let get_lobbies_id_route = warp::path("lobbies")
         .and(warp::path::param())
         .and(warp::path::end())
         .and(warp::get())
         .and(with_lobby_manager(lobby_manager.clone()))
-        .and(warp::header::optional::<String>("authorization"))
         .map(get_lobby_by_id);
 
-    let put_lobby_id_route = warp::path("lobbies")
+    // PUT /lobbies/<id>
+    let put_lobbies_id_route = warp::path("lobbies")
         .and(warp::path::param())
         .and(warp::path::end())
         .and(warp::put())
@@ -315,7 +337,8 @@ async fn main() {
         .and(warp::body::json())
         .map(update_lobby_by_id);
 
-    let delete_lobby_id_route = warp::path("lobbies")
+    // DELETE /lobbies/<id>
+    let delete_lobbies_id_route = warp::path("lobbies")
         .and(warp::path::param())
         .and(warp::path::end())
         .and(warp::delete())
@@ -323,11 +346,20 @@ async fn main() {
         .and(warp::header::optional::<String>("authorization"))
         .map(delete_lobby_by_id);
 
-    let routes = matches_route.or(post_lobby_route)
-                              .or(get_lobby_id_route)
-                              .or(get_lobby_route)
-                              .or(put_lobby_id_route)
-                              .or(delete_lobby_id_route);
+    // POST /lobbies/<id>/players
+    let post_lobbies_id_players_route = warp::path!("lobbies" / String / "players")
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(with_lobby_manager(lobby_manager.clone()))
+        .and(warp::body::json())
+        .map(add_player_to_lobby);
+
+    let routes = matches_route.or(post_lobbies_route)
+                              .or(get_lobbies_id_route)
+                              .or(get_lobbies_route)
+                              .or(put_lobbies_id_route)
+                              .or(delete_lobbies_id_route)
+                              .or(post_lobbies_id_players_route);
 
     warp::serve(routes).run(([127, 0, 0, 1], 3000)).await;
 }
