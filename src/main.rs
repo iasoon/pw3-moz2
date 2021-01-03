@@ -32,11 +32,11 @@ struct Player {
 }
 
 impl Player {
-    pub fn authorize_header(&self, authorization: Option<String>) -> bool {
+    pub fn authorize_header(&self, authorization: &Option<String>) -> bool {
         if authorization.is_none() {
             false
         } else {
-            let bearer_token = authorization.unwrap().to_lowercase();
+            let bearer_token = authorization.as_ref().unwrap().to_lowercase();
             let token_string = bearer_token.strip_prefix("bearer ");
             if token_string.is_none() {
                 return false;
@@ -136,11 +136,11 @@ impl From<Player> for StrippedPlayer {
 }
 
 impl Lobby {
-    pub fn authorize_header(&self, authorization: Option<String>) -> bool {
+    pub fn authorize_header(&self, authorization: &Option<String>) -> bool {
         if authorization.is_none() {
             false
         } else {
-            let bearer_token = authorization.unwrap().to_lowercase();
+            let bearer_token = authorization.as_ref().unwrap().to_lowercase();
             let token_string = bearer_token.strip_prefix("bearer ");
             if token_string.is_none() {
                 return false;
@@ -260,7 +260,7 @@ fn update_lobby_by_id(
     let mut manager = mgr.lock().unwrap();
     match manager.lobbies.get(&id.to_lowercase()) {
         Some(lobby) => {
-            if lobby.authorize_header(authorization) {
+            if lobby.authorize_header(&authorization) {
                 let mut new_lobby = lobby.clone();
                 new_lobby.name = lobby_conf.name;
                 new_lobby.public = lobby_conf.public;
@@ -283,7 +283,7 @@ fn delete_lobby_by_id(
     let mut manager = mgr.lock().unwrap();
     match manager.lobbies.get(&id.to_lowercase()) {
         Some(lobby) => {
-            if lobby.authorize_header(authorization) {
+            if lobby.authorize_header(&authorization) {
                 manager.lobbies.remove(&id);
                 return warp::http::StatusCode::OK.into_response();
             } else {
@@ -321,7 +321,7 @@ fn update_player_in_lobby(
         Some(lobby) => {
             match lobby.players.get(&name) {
                 Some(player) => {
-                    if player.authorize_header(authorization) {
+                    if player.authorize_header(&authorization) {
                         let mut new_player = player.clone();
                         new_player.name = player_update.name;
                         new_player.ready = player_update.ready;
@@ -350,7 +350,7 @@ fn remove_player_from_lobby(
         Some(lobby) => {
             match lobby.players.get(&name) {
                 Some(player) => {
-                    if player.authorize_header(authorization) {
+                    if player.authorize_header(&authorization) || lobby.authorize_header(&authorization){
                         lobby.players.remove(&name);
                         warp::http::StatusCode::OK.into_response()
                     } else {
