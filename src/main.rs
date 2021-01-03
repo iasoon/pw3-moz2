@@ -31,6 +31,26 @@ struct Player {
     ready: bool,
 }
 
+impl Player {
+    pub fn authorize_header(&self, authorization: Option<String>) -> bool {
+        if authorization.is_none() {
+            false
+        } else {
+            let bearer_token = authorization.unwrap().to_lowercase();
+            let token_string = bearer_token.strip_prefix("bearer ");
+            if token_string.is_none() {
+                return false;
+            }
+            let token_opt = Token::from_hex(token_string.unwrap());
+            if token_opt.is_err() || token_opt.unwrap() != self.token {
+                false
+            } else {
+                true
+            }
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct StrippedPlayer {
     name: String,
@@ -59,7 +79,7 @@ struct Lobby {
     name: String,
     public: bool,
     match_config: planetwars::Config,
-    players: Vec<Player>,
+    players: HashMap<String,Player>,
     #[serde(with = "hex")]
     lobby_token: Token
 }
@@ -70,7 +90,7 @@ struct StrippedLobby {
     name: String,
     public: bool,
     match_config: planetwars::Config,
-    players: Vec<StrippedPlayer>,
+    players: HashMap<String,StrippedPlayer>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -88,7 +108,7 @@ impl From<LobbyConfig> for Lobby {
             name: config.name,
             public: config.public,
             match_config: config.match_config,
-            players: vec![],
+            players: HashMap::new(),
             lobby_token: rand::thread_rng().gen(),
         }
     }
@@ -101,7 +121,7 @@ impl From<Lobby> for StrippedLobby {
             name: lobby.name,
             public: lobby.public,
             match_config: lobby.match_config,
-            players: lobby.players.iter().map(|p| StrippedPlayer::from(p.clone())).collect(),
+            players: lobby.players.iter().map(|(k,v)| (k.clone(),StrippedPlayer::from(v.clone()))).collect(),
         }
     }
 }
@@ -127,9 +147,9 @@ impl Lobby {
             }
             let token_opt = Token::from_hex(token_string.unwrap());
             if token_opt.is_err() || token_opt.unwrap() != self.lobby_token {
-                true
-            } else {
                 false
+            } else {
+                true
             }
         }
     }
@@ -241,14 +261,14 @@ fn update_lobby_by_id(
     match manager.lobbies.get(&id.to_lowercase()) {
         Some(lobby) => {
             if lobby.authorize_header(authorization) {
-                return warp::http::StatusCode::UNAUTHORIZED.into_response();
-            } else {
                 let mut new_lobby = lobby.clone();
                 new_lobby.name = lobby_conf.name;
                 new_lobby.public = lobby_conf.public;
                 new_lobby.match_config = lobby_conf.match_config;
                 manager.lobbies.insert(new_lobby.id.to_lowercase(), new_lobby);
                 return warp::http::StatusCode::OK.into_response();
+            } else {
+                return warp::http::StatusCode::UNAUTHORIZED.into_response();
             }
         },
         None => warp::http::StatusCode::NOT_FOUND.into_response()
@@ -264,10 +284,10 @@ fn delete_lobby_by_id(
     match manager.lobbies.get(&id.to_lowercase()) {
         Some(lobby) => {
             if lobby.authorize_header(authorization) {
-                return warp::http::StatusCode::UNAUTHORIZED.into_response();
-            } else {
                 manager.lobbies.remove(&id);
                 return warp::http::StatusCode::OK.into_response();
+            } else {
+                return warp::http::StatusCode::UNAUTHORIZED.into_response();
             }
         },
         None => warp::http::StatusCode::NOT_FOUND.into_response()
@@ -282,8 +302,38 @@ fn add_player_to_lobby(
     let mut manager = mgr.lock().unwrap();
     match manager.lobbies.get_mut(&id.to_lowercase()) {
         Some(lobby) => {
-            lobby.players.push(player);
+            lobby.players.insert(player.name.clone(), player);
             return warp::http::StatusCode::OK.into_response();
+        },
+        None => warp::http::StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+fn update_player_in_lobby(
+    id: String,
+    name: String,
+    mgr: Arc<Mutex<LobbyManager>>,
+    authorization: Option<String>,
+    player_update: StrippedPlayer,
+) -> Response {
+    let mut manager = mgr.lock().unwrap();
+    match manager.lobbies.get_mut(&id.to_lowercase()) {
+        Some(lobby) => {
+            match lobby.players.get(&name) {
+                Some(player) => {
+                    if player.authorize_header(authorization) {
+                        let mut new_player = player.clone();
+                        new_player.name = player_update.name;
+                        new_player.ready = player_update.ready;
+                        lobby.players.remove(&name);
+                        lobby.players.insert(new_player.name.clone(), new_player);
+                        warp::http::StatusCode::OK.into_response()
+                    } else {
+                        warp::http::StatusCode::UNAUTHORIZED.into_response()
+                    }
+                }
+                None => warp::http::StatusCode::NOT_FOUND.into_response()
+            }
         },
         None => warp::http::StatusCode::NOT_FOUND.into_response()
     }
@@ -320,16 +370,14 @@ async fn main() {
         .map(get_lobbies);
 
     // GET /lobbies/<id>
-    let get_lobbies_id_route = warp::path("lobbies")
-        .and(warp::path::param())
+    let get_lobbies_id_route = warp::path!("lobbies" / String)
         .and(warp::path::end())
         .and(warp::get())
         .and(with_lobby_manager(lobby_manager.clone()))
         .map(get_lobby_by_id);
 
     // PUT /lobbies/<id>
-    let put_lobbies_id_route = warp::path("lobbies")
-        .and(warp::path::param())
+    let put_lobbies_id_route = warp::path!("lobbies" / String)
         .and(warp::path::end())
         .and(warp::put())
         .and(with_lobby_manager(lobby_manager.clone()))
@@ -338,8 +386,7 @@ async fn main() {
         .map(update_lobby_by_id);
 
     // DELETE /lobbies/<id>
-    let delete_lobbies_id_route = warp::path("lobbies")
-        .and(warp::path::param())
+    let delete_lobbies_id_route = warp::path!("lobbies" / String)
         .and(warp::path::end())
         .and(warp::delete())
         .and(with_lobby_manager(lobby_manager.clone()))
@@ -354,12 +401,22 @@ async fn main() {
         .and(warp::body::json())
         .map(add_player_to_lobby);
 
+    // PUT /lobbies/<id>/players
+    let put_lobbies_id_players_route = warp::path!("lobbies" / String / "players" / String)
+        .and(warp::path::end())
+        .and(warp::put())
+        .and(with_lobby_manager(lobby_manager.clone()))
+        .and(warp::header::optional::<String>("authorization"))
+        .and(warp::body::json())
+        .map(update_player_in_lobby);
+
     let routes = matches_route.or(post_lobbies_route)
                               .or(get_lobbies_id_route)
                               .or(get_lobbies_route)
                               .or(put_lobbies_id_route)
                               .or(delete_lobbies_id_route)
-                              .or(post_lobbies_id_players_route);
+                              .or(post_lobbies_id_players_route)
+                              .or(put_lobbies_id_players_route);
 
     warp::serve(routes).run(([127, 0, 0, 1], 3000)).await;
 }
