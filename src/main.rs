@@ -192,10 +192,22 @@ fn get_lobbies(
 fn get_lobby_by_id(
     id: String,
     mgr: Arc<Mutex<LobbyManager>>,
+    authorization: Option<String>,
 ) -> Response {
     let manager = mgr.lock().unwrap();
-    match manager.lobbies.get(&id) {
-        Some(lobby) => json(&lobby).into_response(),
+    match manager.lobbies.get(&id.to_lowercase()) {
+        Some(lobby) => {
+            if authorization.is_none() {
+                json(&StrippedLobby::from(lobby.clone())).into_response()
+            } else {
+                let token_opt = Token::from_hex(authorization.unwrap());
+                if token_opt.is_err() || token_opt.unwrap() != lobby.lobby_token {
+                    json(&StrippedLobby::from(lobby.clone())).into_response()
+                } else {
+                    json(&lobby).into_response()
+                }
+            }
+        },
         None => warp::http::StatusCode::NOT_FOUND.into_response()
     }
 }
@@ -216,19 +228,23 @@ async fn main() {
         .map(create_match);
 
     let post_lobby_route = warp::path("lobbies")
+        .and(warp::path::end())
         .and(warp::post())
         .and(with_lobby_manager(lobby_manager.clone()))
         .and(warp::body::json())
         .map(create_lobby);
 
     let get_lobby_route = warp::path("lobbies")
+        .and(warp::path::end())
         .and(warp::get())
         .and(with_lobby_manager(lobby_manager.clone()))
         .map(get_lobbies);
 
     let get_lobby_id_route = warp::path("lobbies")
         .and(warp::path::param())
+        .and(warp::path::end())
         .and(with_lobby_manager(lobby_manager.clone()))
+        .and(warp::header::optional::<String>("authorization"))
         .map(get_lobby_by_id);
 
     let routes = matches_route.or(post_lobby_route)
