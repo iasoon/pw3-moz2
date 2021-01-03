@@ -339,6 +339,31 @@ fn update_player_in_lobby(
     }
 }
 
+fn remove_player_from_lobby(
+    id: String,
+    name: String,
+    mgr: Arc<Mutex<LobbyManager>>,
+    authorization: Option<String>,
+) -> Response {
+    let mut manager = mgr.lock().unwrap();
+    match manager.lobbies.get_mut(&id.to_lowercase()) {
+        Some(lobby) => {
+            match lobby.players.get(&name) {
+                Some(player) => {
+                    if player.authorize_header(authorization) {
+                        lobby.players.remove(&name);
+                        warp::http::StatusCode::OK.into_response()
+                    } else {
+                        warp::http::StatusCode::UNAUTHORIZED.into_response()
+                    }
+                }
+                None => warp::http::StatusCode::NOT_FOUND.into_response()
+            }
+        },
+        None => warp::http::StatusCode::NOT_FOUND.into_response()
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let game_server = GameServer::new();
@@ -410,13 +435,22 @@ async fn main() {
         .and(warp::body::json())
         .map(update_player_in_lobby);
 
+    // DELETE /lobbies/<id>/players
+    let delete_lobbies_id_players_route = warp::path!("lobbies" / String / "players" / String)
+        .and(warp::path::end())
+        .and(warp::delete())
+        .and(with_lobby_manager(lobby_manager.clone()))
+        .and(warp::header::optional::<String>("authorization"))
+        .map(remove_player_from_lobby);
+
     let routes = matches_route.or(post_lobbies_route)
                               .or(get_lobbies_id_route)
                               .or(get_lobbies_route)
                               .or(put_lobbies_id_route)
                               .or(delete_lobbies_id_route)
                               .or(post_lobbies_id_players_route)
-                              .or(put_lobbies_id_players_route);
+                              .or(put_lobbies_id_players_route)
+                              .or(delete_lobbies_id_players_route);
 
     warp::serve(routes).run(([127, 0, 0, 1], 3000)).await;
 }
