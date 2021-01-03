@@ -18,11 +18,6 @@ use std::collections::HashMap;
 use hex::FromHex;
 use rand::Rng;
 
-#[derive(Serialize, Deserialize, Debug)]
-struct MatchConfig {
-    client_tokens: Vec<String>,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Player {
     name: String,
@@ -62,14 +57,13 @@ struct GameManager {
 }
 
 impl GameManager {
-    fn create_match(&mut self, config: MatchConfig) {
-        let clients = config.client_tokens.iter().map(|token_hex| {
-            let token = Token::from_hex(&token_hex).unwrap();
+    fn create_match(&mut self, tokens: Vec<Token>, game_config: planetwars::Config) {
+        let clients = tokens.iter().map(|token| {
             self.game_server.get_client(&token)
         }).collect::<Vec<_>>();
     
         let match_ctx = self.game_server.create_match();
-        tokio::spawn(run_match(clients, match_ctx));
+        tokio::spawn(run_match(clients, match_ctx, game_config));
     }
 }
 
@@ -98,6 +92,11 @@ struct LobbyConfig {
     name: String,
     public: bool,
     match_config: planetwars::Config,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct MatchStartConfig {
+    players: Vec<String>
 }
 
 impl From<LobbyConfig> for Lobby {
@@ -155,6 +154,7 @@ impl Lobby {
     }
 }
 
+#[derive(Clone)]
 struct LobbyManager {
     game_manager: Arc<Mutex<GameManager>>,
     lobbies: HashMap<String, Lobby>
@@ -175,17 +175,12 @@ impl LobbyManager {
     }
 }
 
-async fn run_match(mut clients: Vec<ClientHandle>, mut match_ctx: MatchCtx) {
+async fn run_match(mut clients: Vec<ClientHandle>, mut match_ctx: MatchCtx, config: planetwars::Config) {
     let players = clients.iter_mut().enumerate().map(|(i, client)| {
         let player_token: Token = rand::thread_rng().gen();
         match_ctx.create_player(i as u32, player_token);
         client.run_player(player_token)
     }).collect::<Vec<_>>();
-
-    let config = planetwars::Config {
-        map_file: "hex.json".to_string(),
-        max_turns: 500,
-    };
 
     future::join_all(players).await;
     let pw_match = planetwars::PwMatch::create(match_ctx, config);
@@ -193,27 +188,11 @@ async fn run_match(mut clients: Vec<ClientHandle>, mut match_ctx: MatchCtx) {
     println!("match done");
 }
 
-fn with_game_manager(
-    game_manager: Arc<Mutex<GameManager>>,
-) -> impl Clone + Filter<Extract = (Arc<Mutex<GameManager>>,), Error = Infallible>
-{
-    warp::any().map(move || game_manager.clone())
-}
-
 fn with_lobby_manager(
     lobby_manager: Arc<Mutex<LobbyManager>>,
 ) -> impl Clone + Filter<Extract = (Arc<Mutex<LobbyManager>>,), Error = Infallible>
 {
     warp::any().map(move || lobby_manager.clone())
-}
-
-fn create_match(
-    mgr: Arc<Mutex<GameManager>>,
-    match_config: MatchConfig,
-) -> impl Reply {
-    let mut manager = mgr.lock().unwrap();
-    manager.create_match(match_config);
-    return "sure bro";
 }
 
 fn create_lobby(
@@ -364,6 +343,51 @@ fn remove_player_from_lobby(
     }
 }
 
+fn start_match_in_lobby(
+    id: String,
+    mgr: Arc<Mutex<LobbyManager>>,
+    authorization: Option<String>,
+    config: MatchStartConfig,
+) -> Response {
+    let mut manager = mgr.lock().unwrap();
+    let game_mgr = manager.game_manager.clone();
+    let mut game_manager = game_mgr.lock().unwrap();
+    match manager.lobbies.get_mut(&id.to_lowercase()) {
+        Some(lobby) => {
+            if lobby.authorize_header(&authorization) {
+                let mut tokens = vec![];
+                for player_name in config.players.iter() {
+                    let player_opt = lobby.players.get(player_name);
+                    if player_opt.is_none() {
+                        return warp::reply::with_status(
+                            format!("Player {} not found", player_name),
+                            warp::http::StatusCode::NOT_FOUND
+                        ).into_response();
+                    }
+                    let player = player_opt.unwrap();
+                    if !player.ready {
+                        return warp::reply::with_status(
+                            "Not all players are ready",
+                            warp::http::StatusCode::BAD_REQUEST
+                        ).into_response();
+                    }
+
+                    tokens.push(player.token);
+                }
+                // TODO un-ready all players
+                for player_name in config.players.iter() {
+                    lobby.players.get_mut(player_name).unwrap().ready = false;
+                }
+                game_manager.create_match(tokens, lobby.match_config.clone());
+                return warp::http::StatusCode::OK.into_response();
+            } else {
+                return warp::http::StatusCode::UNAUTHORIZED.into_response();
+            }
+        },
+        None => warp::http::StatusCode::NOT_FOUND.into_response()
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let game_server = GameServer::new();
@@ -372,12 +396,6 @@ async fn main() {
 
     let game_manager = Arc::new(Mutex::new(GameManager { game_server }));
     let lobby_manager = Arc::new(Mutex::new(LobbyManager::new(game_manager.clone())));
-
-    let matches_route = warp::path("matches")
-        .and(warp::post())
-        .and(with_game_manager(game_manager))
-        .and(warp::body::json())
-        .map(create_match);
 
     // POST /lobbies
     let post_lobbies_route = warp::path("lobbies")
@@ -443,14 +461,25 @@ async fn main() {
         .and(warp::header::optional::<String>("authorization"))
         .map(remove_player_from_lobby);
 
-    let routes = matches_route.or(post_lobbies_route)
+    // POST /lobbies/<id>/start
+    let post_lobbies_id_start_route = warp::path!("lobbies" / String / "start")
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(with_lobby_manager(lobby_manager.clone()))
+        .and(warp::header::optional::<String>("authorization"))
+        .and(warp::body::json())
+        .map(start_match_in_lobby);
+
+
+    let routes = post_lobbies_route
                               .or(get_lobbies_id_route)
                               .or(get_lobbies_route)
                               .or(put_lobbies_id_route)
                               .or(delete_lobbies_id_route)
                               .or(post_lobbies_id_players_route)
                               .or(put_lobbies_id_players_route)
-                              .or(delete_lobbies_id_players_route);
+                              .or(delete_lobbies_id_players_route)
+                              .or(post_lobbies_id_start_route);
 
     warp::serve(routes).run(([127, 0, 0, 1], 3000)).await;
 }
