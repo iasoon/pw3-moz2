@@ -6,6 +6,7 @@ use futures::future;
 mod planetwars;
 
 use mozaic_core::{Token, GameServer, MatchCtx};
+use mozaic_core::msg_stream::{MsgStreamHandle};
 
 use std::convert::Infallible;
 use warp::reply::{json,Reply,Response};
@@ -54,16 +55,27 @@ struct StrippedPlayer {
 
 struct GameManager {
     game_server: GameServer,
+    matches: HashMap<String, MatchData>
+}
+
+struct MatchData {
+    log: MsgStreamHandle<String>,
 }
 
 impl GameManager {
-    fn create_match(&mut self, tokens: Vec<Token>, game_config: planetwars::Config) {
+    fn create_match(&mut self, tokens: Vec<Token>, game_config: planetwars::Config) -> String {
         let clients = tokens.iter().map(|token| {
             self.game_server.get_client(&token)
         }).collect::<Vec<_>>();
     
         let match_ctx = self.game_server.create_match();
+
+        let match_id = gen_match_id();
+        self.matches.insert(match_id.clone(),
+            MatchData { log: match_ctx.output_stream().clone() }
+        );
         tokio::spawn(run_match(clients, match_ctx, game_config));
+        return match_id;
     }
 }
 
@@ -97,6 +109,11 @@ struct LobbyConfig {
 #[derive(Serialize, Deserialize, Debug)]
 struct MatchStartConfig {
     players: Vec<String>
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct MatchStartResult {
+    match_id: String,
 }
 
 impl From<LobbyConfig> for Lobby {
@@ -178,14 +195,22 @@ impl LobbyManager {
 async fn run_match(mut clients: Vec<ClientHandle>, mut match_ctx: MatchCtx, config: planetwars::Config) {
     let players = clients.iter_mut().enumerate().map(|(i, client)| {
         let player_token: Token = rand::thread_rng().gen();
-        match_ctx.create_player(i as u32, player_token);
+        match_ctx.create_player((i+1) as u32, player_token);
         client.run_player(player_token)
     }).collect::<Vec<_>>();
+    
 
     future::join_all(players).await;
     let pw_match = planetwars::PwMatch::create(match_ctx, config);
     pw_match.run().await;
     println!("match done");
+}
+
+fn with_game_manager(
+    game_manager: Arc<Mutex<GameManager>>,
+) -> impl Clone + Filter<Extract = (Arc<Mutex<GameManager>>,), Error = Infallible>
+{
+    warp::any().map(move || game_manager.clone())
 }
 
 fn with_lobby_manager(
@@ -374,17 +399,41 @@ fn start_match_in_lobby(
 
                     tokens.push(player.token);
                 }
-                // TODO un-ready all players
                 for player_name in config.players.iter() {
                     lobby.players.get_mut(player_name).unwrap().ready = false;
                 }
-                game_manager.create_match(tokens, lobby.match_config.clone());
-                return warp::http::StatusCode::OK.into_response();
+                let match_id = game_manager.create_match(tokens, lobby.match_config.clone());
+                return warp::reply::with_status(
+                    json(&MatchStartResult { match_id }),
+                    warp::http::StatusCode::OK
+                ).into_response();
             } else {
                 return warp::http::StatusCode::UNAUTHORIZED.into_response();
             }
         },
         None => warp::http::StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+fn gen_match_id() -> String {
+    let id: [u8; 16] = rand::random();
+    hex::encode(&id)
+}
+
+fn get_match_log(
+    match_id: String,
+    mgr: Arc<Mutex<GameManager>>,
+) -> warp::reply::Response
+{
+    let manager = mgr.lock().unwrap();
+    match manager.matches.get(&match_id) {
+        None => warp::http::StatusCode::NOT_FOUND.into_response(),
+        Some(m) => {
+            let log = m.log.to_vec().into_iter().map(|e| {
+                e.as_ref().to_string()
+            }).collect::<Vec<_>>();
+            json(&log).into_response()
+        }
     }
 }
 
@@ -394,7 +443,10 @@ async fn main() {
     // TODO: can we run these on the same port? Would that be desirable?
     tokio::spawn(game_server.run_ws_server("127.0.0.1:8080".to_string()));
 
-    let game_manager = Arc::new(Mutex::new(GameManager { game_server }));
+    let game_manager = Arc::new(Mutex::new(GameManager {
+        game_server,
+        matches: HashMap::new(),
+    }));
     let lobby_manager = Arc::new(Mutex::new(LobbyManager::new(game_manager.clone())));
 
     // POST /lobbies
@@ -469,7 +521,13 @@ async fn main() {
         .and(warp::header::optional::<String>("authorization"))
         .and(warp::body::json())
         .map(start_match_in_lobby);
-
+    
+    // GET /matches/<id>
+    let get_matches_route = warp::path!("matches" / String)
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(with_game_manager(game_manager.clone()))
+        .map(get_match_log);
 
     let routes = post_lobbies_route
                               .or(get_lobbies_id_route)
@@ -479,7 +537,8 @@ async fn main() {
                               .or(post_lobbies_id_players_route)
                               .or(put_lobbies_id_players_route)
                               .or(delete_lobbies_id_players_route)
-                              .or(post_lobbies_id_start_route);
-
-    warp::serve(routes).run(([127, 0, 0, 1], 3000)).await;
+                              .or(post_lobbies_id_start_route)
+                              .or(get_matches_route);
+    
+    warp::serve(routes).run(([127, 0, 0, 1], 7412)).await;
 }

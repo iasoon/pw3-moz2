@@ -23,8 +23,6 @@ impl PwMatch {
         // TODO: this is kind of hacked together at the moment
         let match_state = PlanetWars::create(config, match_ctx.players().len());
 
-
-
         PwMatch {
             match_state,
             match_ctx,
