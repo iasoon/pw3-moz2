@@ -251,6 +251,35 @@ fn update_lobby_by_id(
     }
 }
 
+fn delete_lobby_by_id(
+    id: String,
+    mgr: Arc<Mutex<LobbyManager>>,
+    authorization: Option<String>,
+) -> Response {
+    let mut manager = mgr.lock().unwrap();
+    match manager.lobbies.get(&id.to_lowercase()) {
+        Some(lobby) => {
+            if authorization.is_none() {
+                return warp::http::StatusCode::UNAUTHORIZED.into_response();
+            } else {
+                let bearer_token = authorization.unwrap().to_lowercase();
+                let token_string = bearer_token.strip_prefix("bearer ");
+                if token_string.is_none() {
+                    return warp::http::StatusCode::UNAUTHORIZED.into_response();
+                }
+                let token_opt = Token::from_hex(token_string.unwrap());
+                if token_opt.is_err() || token_opt.unwrap() != lobby.lobby_token {
+                    return warp::http::StatusCode::UNAUTHORIZED.into_response();
+                } else {
+                    manager.lobbies.remove(&id);
+                    return warp::http::StatusCode::OK.into_response();
+                }
+            }
+        },
+        None => warp::http::StatusCode::NOT_FOUND.into_response()
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let game_server = GameServer::new();
@@ -296,10 +325,19 @@ async fn main() {
         .and(warp::body::json())
         .map(update_lobby_by_id);
 
+    let delete_lobby_id_route = warp::path("lobbies")
+        .and(warp::path::param())
+        .and(warp::path::end())
+        .and(warp::delete())
+        .and(with_lobby_manager(lobby_manager.clone()))
+        .and(warp::header::optional::<String>("authorization"))
+        .map(delete_lobby_by_id);
+
     let routes = matches_route.or(post_lobby_route)
                               .or(get_lobby_id_route)
                               .or(get_lobby_route)
-                              .or(put_lobby_id_route);
+                              .or(put_lobby_id_route)
+                              .or(delete_lobby_id_route);
 
     warp::serve(routes).run(([127, 0, 0, 1], 3000)).await;
 }
