@@ -200,7 +200,12 @@ fn get_lobby_by_id(
             if authorization.is_none() {
                 json(&StrippedLobby::from(lobby.clone())).into_response()
             } else {
-                let token_opt = Token::from_hex(authorization.unwrap());
+                let bearer_token = authorization.unwrap().to_lowercase();
+                let token_string = bearer_token.strip_prefix("bearer ");
+                if token_string.is_none() {
+                    return json(&StrippedLobby::from(lobby.clone())).into_response();
+                }
+                let token_opt = Token::from_hex(token_string.unwrap());
                 if token_opt.is_err() || token_opt.unwrap() != lobby.lobby_token {
                     json(&StrippedLobby::from(lobby.clone())).into_response()
                 } else {
@@ -243,6 +248,7 @@ async fn main() {
     let get_lobby_id_route = warp::path("lobbies")
         .and(warp::path::param())
         .and(warp::path::end())
+        .and(warp::get())
         .and(with_lobby_manager(lobby_manager.clone()))
         .and(warp::header::optional::<String>("authorization"))
         .map(get_lobby_by_id);
