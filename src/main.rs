@@ -106,6 +106,26 @@ impl From<Lobby> for StrippedLobby {
     }
 }
 
+impl Lobby {
+    pub fn authorize_header(&self, authorization: Option<String>) -> bool {
+        if authorization.is_none() {
+            false
+        } else {
+            let bearer_token = authorization.unwrap().to_lowercase();
+            let token_string = bearer_token.strip_prefix("bearer ");
+            if token_string.is_none() {
+                return false;
+            }
+            let token_opt = Token::from_hex(token_string.unwrap());
+            if token_opt.is_err() || token_opt.unwrap() != self.lobby_token {
+                true
+            } else {
+                false
+            }
+        }
+    }
+}
+
 struct LobbyManager {
     game_manager: Arc<Mutex<GameManager>>,
     lobbies: HashMap<String, Lobby>
@@ -197,20 +217,10 @@ fn get_lobby_by_id(
     let manager = mgr.lock().unwrap();
     match manager.lobbies.get(&id.to_lowercase()) {
         Some(lobby) => {
-            if authorization.is_none() {
-                json(&StrippedLobby::from(lobby.clone())).into_response()
+            if lobby.authorize_header(authorization) {
+                json(&lobby).into_response()
             } else {
-                let bearer_token = authorization.unwrap().to_lowercase();
-                let token_string = bearer_token.strip_prefix("bearer ");
-                if token_string.is_none() {
-                    return json(&StrippedLobby::from(lobby.clone())).into_response();
-                }
-                let token_opt = Token::from_hex(token_string.unwrap());
-                if token_opt.is_err() || token_opt.unwrap() != lobby.lobby_token {
-                    json(&StrippedLobby::from(lobby.clone())).into_response()
-                } else {
-                    json(&lobby).into_response()
-                }
+                json(&StrippedLobby::from(lobby.clone())).into_response()
             }
         },
         None => warp::http::StatusCode::NOT_FOUND.into_response()
@@ -226,25 +236,15 @@ fn update_lobby_by_id(
     let mut manager = mgr.lock().unwrap();
     match manager.lobbies.get(&id.to_lowercase()) {
         Some(lobby) => {
-            if authorization.is_none() {
+            if lobby.authorize_header(authorization) {
                 return warp::http::StatusCode::UNAUTHORIZED.into_response();
             } else {
-                let bearer_token = authorization.unwrap().to_lowercase();
-                let token_string = bearer_token.strip_prefix("bearer ");
-                if token_string.is_none() {
-                    return warp::http::StatusCode::UNAUTHORIZED.into_response();
-                }
-                let token_opt = Token::from_hex(token_string.unwrap());
-                if token_opt.is_err() || token_opt.unwrap() != lobby.lobby_token {
-                    return warp::http::StatusCode::UNAUTHORIZED.into_response();
-                } else {
-                    let mut new_lobby = lobby.clone();
-                    new_lobby.name = lobby_conf.name;
-                    new_lobby.public = lobby_conf.public;
-                    new_lobby.match_config = lobby_conf.match_config;
-                    manager.lobbies.insert(new_lobby.id.to_lowercase(), new_lobby);
-                    return warp::http::StatusCode::OK.into_response();
-                }
+                let mut new_lobby = lobby.clone();
+                new_lobby.name = lobby_conf.name;
+                new_lobby.public = lobby_conf.public;
+                new_lobby.match_config = lobby_conf.match_config;
+                manager.lobbies.insert(new_lobby.id.to_lowercase(), new_lobby);
+                return warp::http::StatusCode::OK.into_response();
             }
         },
         None => warp::http::StatusCode::NOT_FOUND.into_response()
@@ -259,21 +259,11 @@ fn delete_lobby_by_id(
     let mut manager = mgr.lock().unwrap();
     match manager.lobbies.get(&id.to_lowercase()) {
         Some(lobby) => {
-            if authorization.is_none() {
+            if lobby.authorize_header(authorization) {
                 return warp::http::StatusCode::UNAUTHORIZED.into_response();
             } else {
-                let bearer_token = authorization.unwrap().to_lowercase();
-                let token_string = bearer_token.strip_prefix("bearer ");
-                if token_string.is_none() {
-                    return warp::http::StatusCode::UNAUTHORIZED.into_response();
-                }
-                let token_opt = Token::from_hex(token_string.unwrap());
-                if token_opt.is_err() || token_opt.unwrap() != lobby.lobby_token {
-                    return warp::http::StatusCode::UNAUTHORIZED.into_response();
-                } else {
-                    manager.lobbies.remove(&id);
-                    return warp::http::StatusCode::OK.into_response();
-                }
+                manager.lobbies.remove(&id);
+                return warp::http::StatusCode::OK.into_response();
             }
         },
         None => warp::http::StatusCode::NOT_FOUND.into_response()
