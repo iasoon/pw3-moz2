@@ -618,7 +618,7 @@ dependencies = [
 [[package]]
 name = "mozaic-core"
 version = "0.0.0"
-source = "git+https://github.com/iasoon/MOZAIC2?rev=bbca372#bbca3725aa6b81bb5b5fc6b27d47958e934e9add"
+source = "git+https://github.com/iasoon/MOZAIC2?rev=6b1b646#6b1b64675638fa68343077d3a9c6dbfdc536e2cb"
 dependencies = [
  "bincode",
  "bytes 0.6.0",
@@ -658,6 +658,15 @@ dependencies = [
  "cfg-if 0.1.10",
  "libc",
  "winapi 0.3.9",
+]
+
+[[package]]
+name = "num-traits"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a64b1ec5cda2586e284722486d802acf1f7dbdc623e2bfc57e65ca1cd099290"
+dependencies = [
+ "autocfg 1.0.1",
 ]
 
 [[package]]
@@ -753,6 +762,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
+name = "planetwars-rules"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ppv-lite86"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -786,7 +803,9 @@ dependencies = [
  "futures",
  "hex",
  "mozaic-core",
+ "planetwars-rules",
  "rand 0.7.3",
+ "rmp-serde",
  "serde",
  "serde_json",
  "tokio",
@@ -977,6 +996,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3acd125665422973a33ac9d3dd2df85edad0f4ae9b00dafb1a05e43a9f5ef8e7"
 dependencies = [
  "winapi 0.3.9",
+]
+
+[[package]]
+name = "rmp"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f10b46df14cf1ee1ac7baa4d2fbc2c52c0622a4b82fa8740e37bc452ac0184f"
+dependencies = [
+ "byteorder",
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2657c5ae22d7d73f8cebfa8bf69c851fb3aa4ba3fb09e59b87de88bd18ecbe01"
+dependencies = [
+ "byteorder",
+ "rmp",
+ "serde",
 ]
 
 [[package]]
