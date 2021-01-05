@@ -33,7 +33,12 @@ async fn main() {
         rx: rx.fuse(),
     };
 
-    h.run().await.unwrap();
+    let res = h.run().await;
+    if let Err(err) = res {
+        if err.kind() != io::ErrorKind::UnexpectedEof {
+            panic!("error in stdio handler: {}", err);
+        }
+    }
 }
 
 struct Handler {
