@@ -1,7 +1,10 @@
 #![feature(async_closure)]
 
+use mozaic_core::msg_stream::msg_stream;
+use serde::{Deserialize, Serialize};
+
 use mozaic_core::client_manager::ClientHandle;
-use futures::future;
+use futures::{FutureExt, stream, StreamExt};
 
 mod planetwars;
 
@@ -11,7 +14,6 @@ use mozaic_core::msg_stream::{MsgStreamHandle};
 use std::convert::Infallible;
 use warp::reply::{json,Reply,Response};
 use warp::Filter;
-use serde::{Serialize,Deserialize};
 
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
@@ -68,13 +70,17 @@ impl GameManager {
             self.game_server.get_client(&token)
         }).collect::<Vec<_>>();
     
-        let match_ctx = self.game_server.create_match();
-
         let match_id = gen_match_id();
+        let log = msg_stream();
         self.matches.insert(match_id.clone(),
-            MatchData { log: match_ctx.output_stream().clone() }
+            MatchData { log: log.clone() }
         );
-        tokio::spawn(run_match(clients, match_ctx, game_config));
+        tokio::spawn(run_match(
+            clients,
+            self.game_server.clone(),
+            game_config,
+            log)
+        );
         return match_id;
     }
 }
@@ -192,15 +198,22 @@ impl LobbyManager {
     }
 }
 
-async fn run_match(mut clients: Vec<ClientHandle>, mut match_ctx: MatchCtx, config: planetwars::Config) {
-    let players = clients.iter_mut().enumerate().map(|(i, client)| {
-        let player_token: Token = rand::thread_rng().gen();
-        match_ctx.create_player((i+1) as u32, player_token);
-        client.run_player(player_token)
-    }).collect::<Vec<_>>();
+async fn run_match(
+    mut clients: Vec<ClientHandle>,
+    mut serv: GameServer,
+    config: planetwars::Config,
+    log: MsgStreamHandle<String>)
+{
+    let event_bus = msg_stream();
+    let players = stream::iter(clients.iter_mut().enumerate())
+        .then(|(i, client)| {
+            let player_token: Token = rand::thread_rng().gen();
+            let player_id = (i+1) as u32;
+            let player = serv.register_player(player_id, player_token, &event_bus);
+            client.run_player(player_token).map(move |_| (player_id, player))
+        }).collect().await;
     
-
-    future::join_all(players).await;
+    let match_ctx = MatchCtx::new(event_bus, players, log);
     let pw_match = planetwars::PwMatch::create(match_ctx, config);
     pw_match.run().await;
     println!("match done");
