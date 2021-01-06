@@ -83,6 +83,10 @@ impl GameManager {
         );
         return match_id;
     }
+
+    fn list_matches(&self) -> Vec<String> {
+        self.matches.keys().cloned().collect()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -433,6 +437,14 @@ fn gen_match_id() -> String {
     hex::encode(&id)
 }
 
+fn list_matches(
+    mgr: Arc<Mutex<GameManager>>
+) -> impl Reply
+{
+    let manager = mgr.lock().unwrap();
+    json(&manager.list_matches())
+}
+
 fn get_match_log(
     match_id: String,
     mgr: Arc<Mutex<GameManager>>,
@@ -535,8 +547,15 @@ async fn main() {
         .and(warp::body::json())
         .map(start_match_in_lobby);
     
+    // GET /matches
+    let get_matches_route = warp::path("matches")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(with_game_manager(game_manager.clone()))
+        .map(list_matches);
+    
     // GET /matches/<id>
-    let get_matches_route = warp::path!("matches" / String)
+    let get_match_route = warp::path!("matches" / String)
         .and(warp::path::end())
         .and(warp::get())
         .and(with_game_manager(game_manager.clone()))
@@ -551,7 +570,8 @@ async fn main() {
                               .or(put_lobbies_id_players_route)
                               .or(delete_lobbies_id_players_route)
                               .or(post_lobbies_id_start_route)
-                              .or(get_matches_route);
+                              .or(get_matches_route)
+                              .or(get_match_route);
     
     warp::serve(routes).run(([127, 0, 0, 1], 7412)).await;
 }
