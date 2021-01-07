@@ -4,17 +4,15 @@ use mozaic_core::match_context::EventBus;
 use std::collections::HashMap;
 use mozaic_core::msg_stream::MsgStreamHandle;
 use serde_bytes::ByteBuf;
-use tokio::io::AsyncWriteExt;
-use tokio::prelude::AsyncWrite;
-use tokio::prelude::AsyncRead;
-use tokio::io::AsyncReadExt;
 use mozaic_core::player_supervisor::RequestMessage;
 use mozaic_core::msg_stream::MsgStreamReader;
 use mozaic_core::msg_stream::msg_stream;
 use mozaic_core::match_context::{self as match_ctx, MatchCtx};
 use serde::{Deserialize, Serialize};
-use futures::{select, StreamExt, FutureExt};
+use futures::{select, Sink, SinkExt, StreamExt, FutureExt};
 use std::io;
+use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+use bytes::Bytes;
 
 use tokio::sync::mpsc;
 
@@ -35,9 +33,7 @@ async fn main() {
 
     let res = h.run().await;
     if let Err(err) = res {
-        if err.kind() != io::ErrorKind::UnexpectedEof {
-            panic!("error in stdio handler: {}", err);
-        }
+        panic!("error in stdio handler: {}", err);
     }
 }
 
@@ -52,32 +48,25 @@ enum HandlerMsg {
     MatchComplete { id: String, log: MsgStreamHandle<String> },
 }
 
-async fn read_frame<R>(stream: &mut R) -> io::Result<Vec<u8>>
-    where R: AsyncRead + Unpin
-{
-    let len = stream.read_u32().await?;
-    let mut buf = vec![0; len as usize];
-    stream.read_exact(&mut buf).await?;
-    return Ok(buf);
-}
-
-async fn write_frame<W>(stream: &mut W, buf: Vec<u8>) -> io::Result<()>
-    where W: AsyncWrite + Unpin
-{
-    stream.write_u32(buf.len() as u32).await?;
-    stream.write_all(&buf).await?;
-    stream.flush().await
-}
-
 impl Handler {
     async fn run(&mut self) -> io::Result<()> {
-        let mut stdin = tokio::io::stdin();
-        let mut stdout = tokio::io::stdout();
+        let mut input_stream = FramedRead::new(
+            tokio::io::stdin(),
+            LengthDelimitedCodec::new(),
+        );
+
+        let mut output_stream = FramedWrite::new(
+            tokio::io::stdout(),
+            LengthDelimitedCodec::new(),
+        );
 
         loop {
             select!(
-                read_res = read_frame(&mut stdin).fuse() => {
-                    let frame = read_res?;
+                read_res = input_stream.next().fuse() => {
+                    let frame = match read_res {
+                        None => return Ok(()),
+                        Some(frame) => frame?,
+                    };
                     let msg = rmp_serde::from_slice(&frame).expect("invalid message");
                     self.handle_message(msg);
                 }
@@ -94,11 +83,11 @@ impl Handler {
                         }
                     );
                     let frame = rmp_serde::to_vec_named(&msg).unwrap();
-                    write_frame(&mut stdout, frame).await?;
+                    output_stream.send(Bytes::from(frame)).await?;
                 }
                 item = self.rx.next() => {
                     let msg = item.unwrap();
-                    self.handle_event(msg, &mut stdout).await?;
+                    self.handle_event(msg, &mut output_stream).await?;
                 }
             )
         }
@@ -159,9 +148,9 @@ impl Handler {
         }
     }
 
-    async fn handle_event<W>(&mut self, event: HandlerMsg, stdout: &mut W)
+    async fn handle_event<W>(&mut self, event: HandlerMsg, sink: &mut W)
         -> io::Result<()>
-        where W: AsyncWrite + Unpin
+        where W: Sink<Bytes, Error=io::Error> + Unpin
     {
         match event {
             HandlerMsg::MatchComplete { id, log } => {
@@ -177,7 +166,7 @@ impl Handler {
                     }
                 );
                 let buf = rmp_serde::to_vec_named(&msg).unwrap();
-                write_frame(stdout, buf).await
+                sink.send(Bytes::from(buf)).await
             }
         }
     }
