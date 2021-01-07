@@ -31,9 +31,6 @@ write_msg(proc.stdin, {
 })
 
 while True:
-    # WHY IS THIS REQUIRED
-    time.sleep(0.01)
-
     msg = read_msg(proc.stdout)
     if msg['type'] == 'player_request':
         # request data is in msg['content'].
