@@ -78,8 +78,7 @@ impl Handler {
                             player_id: player_uid.player_id,
                             match_id: player_uid.match_id,
                             request_id: req.request_id,
-                            // TODO: dont clone here
-                            content: ByteBuf::from(content.clone()),    
+                            content: &content,   
                         }
                     );
                     let frame = rmp_serde::to_vec_named(&msg).unwrap();
@@ -199,18 +198,20 @@ struct PlayerResponse {
 #[derive(Serialize, Deserialize)]
 #[serde(tag="type")]
 #[serde(rename_all="snake_case")]
-enum ServerMessage {
-    PlayerRequest(PlayerRequest),
+enum ServerMessage<'a> {
+    #[serde(borrow)]
+    PlayerRequest(PlayerRequest<'a>),
     MatchFinished(MatchFinished),
 }
 
 
 #[derive(Serialize, Deserialize)]
-struct PlayerRequest {
+struct PlayerRequest<'a> {
     match_id: String,
     player_id: u32,
     request_id: u32,
-    content: ByteBuf,
+    #[serde(with="serde_bytes")]
+    content: &'a [u8],
 }
 
 #[derive(Serialize, Deserialize)]
