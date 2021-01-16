@@ -49,13 +49,17 @@ impl PwMatch {
         let state = self.match_state.state();
         let match_ctx = &mut self.match_ctx;
 
+        // TODO: this numbering is really messy.
+        // Get rid of the distinction between player_num
+        // and player_id.
+
         self.match_state.state()
             .players
             .iter()
             .filter(|p| p.alive)
             .map(move |player| {
                 let state_for_player =
-                    pw_serializer::serialize_rotated(&state, player.id);
+                    pw_serializer::serialize_rotated(&state, player.id-1);
                 match_ctx
                     .request(
                         player.id.try_into().unwrap(),

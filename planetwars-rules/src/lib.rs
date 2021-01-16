@@ -46,8 +46,8 @@ impl PlanetWars {
         serializer::serialize(&self.state)
     }
 
-    pub fn serialize_player_state(&self, player_num: usize) -> protocol::State {
-        serializer::serialize_rotated(&self.state, player_num)
+    pub fn serialize_player_state(&self, player_id: usize) -> protocol::State {
+        serializer::serialize_rotated(&self.state, (player_id - 1))
     }
 
     pub fn state<'a>(&'a self) -> &'a PwState {
@@ -69,7 +69,7 @@ impl PlanetWars {
     /// Check the given command for validity.
     /// If it is valid, return an internal representation of the dispatch
     /// described by the command.
-    pub fn parse_command(&self, player_num: usize, cmd: &protocol::Command)
+    pub fn parse_command(&self, player_id: usize, cmd: &protocol::Command)
         -> Result<Dispatch, CommandError>
     {
         let origin_id = *self
@@ -82,7 +82,8 @@ impl PlanetWars {
             .get(&cmd.destination)
             .ok_or(CommandError::DestinationDoesNotExist)?;
 
-        if self.state.planets[origin_id].owner() != Some(player_num) {
+        if self.state.planets[origin_id].owner() != Some(player_id - 1) {
+            println!("owner was {:?}", self.state.planets[origin_id].owner());
             return Err(CommandError::OriginNotOwned);
         }
 
