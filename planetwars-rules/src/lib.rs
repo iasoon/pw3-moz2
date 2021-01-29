@@ -47,7 +47,7 @@ impl PlanetWars {
     }
 
     pub fn serialize_player_state(&self, player_id: usize) -> protocol::State {
-        serializer::serialize_rotated(&self.state, (player_id - 1))
+        serializer::serialize_rotated(&self.state, player_id - 1)
     }
 
     pub fn state<'a>(&'a self) -> &'a PwState {
