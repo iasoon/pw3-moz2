@@ -1,6 +1,7 @@
 #![feature(async_closure)]
 
 use mozaic_core::msg_stream::msg_stream;
+use mpsc::UnboundedSender;
 use serde::{Deserialize, Serialize};
 
 use mozaic_core::client_manager::ClientHandle;
@@ -10,12 +11,15 @@ mod planetwars;
 
 use mozaic_core::{Token, GameServer, MatchCtx};
 use mozaic_core::msg_stream::{MsgStreamHandle};
+use tokio::sync::mpsc;
 
-use std::convert::Infallible;
-use warp::reply::{json,Reply,Response};
+use std::{convert::Infallible, unimplemented};
+use warp::{reply::{json,Reply,Response}, ws::WebSocket};
 use warp::Filter;
 
+
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
 
 use hex::FromHex;
@@ -26,7 +30,6 @@ struct Player {
     name: String,
     #[serde(with = "hex")]
     token: Token,
-    ready: bool,
 }
 
 impl Player {
@@ -52,7 +55,6 @@ impl Player {
 #[derive(Serialize, Deserialize, Debug)]
 struct StrippedPlayer {
     name: String,
-    ready: bool,
 }
 
 struct GameManager {
@@ -89,15 +91,14 @@ impl GameManager {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Clone, Debug)]
 struct Lobby {
     id: String,
     name: String,
     public: bool,
-    match_config: planetwars::Config,
     players: HashMap<String,Player>,
-    #[serde(with = "hex")]
-    lobby_token: Token
+    // #[serde(with = "hex")]
+    lobby_token: Token,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -105,7 +106,6 @@ struct StrippedLobby {
     id: String,
     name: String,
     public: bool,
-    match_config: planetwars::Config,
     players: HashMap<String,StrippedPlayer>,
 }
 
@@ -133,7 +133,6 @@ impl From<LobbyConfig> for Lobby {
             id: hex::encode(id),
             name: config.name,
             public: config.public,
-            match_config: config.match_config,
             players: HashMap::new(),
             lobby_token: rand::thread_rng().gen(),
         }
@@ -146,7 +145,6 @@ impl From<Lobby> for StrippedLobby {
             id: lobby.id,
             name: lobby.name,
             public: lobby.public,
-            match_config: lobby.match_config,
             players: lobby.players.iter().map(|(k,v)| (k.clone(),StrippedPlayer::from(v.clone()))).collect(),
         }
     }
@@ -156,7 +154,6 @@ impl From<Player> for StrippedPlayer {
     fn from(player: Player) -> StrippedPlayer {
         StrippedPlayer {
             name: player.name,
-            ready: player.ready,
         }
     }
 }
@@ -181,10 +178,10 @@ impl Lobby {
     }
 }
 
-#[derive(Clone)]
 struct LobbyManager {
     game_manager: Arc<Mutex<GameManager>>,
-    lobbies: HashMap<String, Lobby>
+    lobbies: HashMap<String, Lobby>,
+    websocket_connections: HashMap<String, Vec<WsConnection>>,
 }
 
 impl LobbyManager {
@@ -192,6 +189,7 @@ impl LobbyManager {
         Self {
             game_manager,
             lobbies: HashMap::new(),
+            websocket_connections: HashMap::new(),
         }
     }
 
@@ -200,6 +198,28 @@ impl LobbyManager {
         self.lobbies.insert(lobby.id.clone(), lobby.clone());
         lobby
     }
+
+    pub fn send_update(&mut self, lobby_id: &str, msg: String) {
+        if let Some(connections) = self.websocket_connections.get_mut(lobby_id) {
+            for conn in connections {
+                conn.send(msg.clone())
+            }
+        }
+    }
+}
+
+struct WsConnection {
+    conn_id: usize,
+    tx: mpsc::UnboundedSender<String>,
+}
+
+impl WsConnection {
+    pub fn send(&mut self, msg: String) {
+        self.tx.send(msg).unwrap();
+    }
+}
+// TODO
+enum LobbyEvent {
 }
 
 async fn run_match(
@@ -243,7 +263,7 @@ fn create_lobby(
 ) -> impl Reply {
     let mut manager = mgr.lock().unwrap();
     let lobby = manager.create_lobby(lobby_config);
-    json(&lobby)
+    json(&StrippedLobby::from(lobby.clone()))
 }
 
 fn get_lobbies(
@@ -285,7 +305,6 @@ fn update_lobby_by_id(
                 let mut new_lobby = lobby.clone();
                 new_lobby.name = lobby_conf.name;
                 new_lobby.public = lobby_conf.public;
-                new_lobby.match_config = lobby_conf.match_config;
                 manager.lobbies.insert(new_lobby.id.to_lowercase(), new_lobby);
                 return warp::http::StatusCode::OK.into_response();
             } else {
@@ -345,7 +364,6 @@ fn update_player_in_lobby(
                     if player.authorize_header(&authorization) {
                         let mut new_player = player.clone();
                         new_player.name = player_update.name;
-                        new_player.ready = player_update.ready;
                         lobby.players.remove(&name);
                         lobby.players.insert(new_player.name.clone(), new_player);
                         warp::http::StatusCode::OK.into_response()
@@ -407,19 +425,22 @@ fn start_match_in_lobby(
                         ).into_response();
                     }
                     let player = player_opt.unwrap();
-                    if !player.ready {
-                        return warp::reply::with_status(
-                            "Not all players are ready",
-                            warp::http::StatusCode::BAD_REQUEST
-                        ).into_response();
-                    }
+                    // TODO
+                    // if !player.ready {
+                    //     return warp::reply::with_status(
+                    //         "Not all players are ready",
+                    //         warp::http::StatusCode::BAD_REQUEST
+                    //     ).into_response();
+                    // }
 
                     tokens.push(player.token);
                 }
-                for player_name in config.players.iter() {
-                    lobby.players.get_mut(player_name).unwrap().ready = false;
-                }
-                let match_id = game_manager.create_match(tokens, lobby.match_config.clone());
+                // TODO
+                // for player_name in config.players.iter() {
+                //     lobby.players.get_mut(player_name).unwrap().ready = false;
+                // }
+                let match_config: planetwars::Config = unimplemented!();
+                let match_id = game_manager.create_match(tokens, match_config.clone());
                 return warp::reply::with_status(
                     json(&MatchStartResult { match_id }),
                     warp::http::StatusCode::OK
@@ -458,6 +479,73 @@ fn get_match_log(
                 e.as_ref().to_string()
             }).collect::<Vec<_>>();
             json(&log).into_response()
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum WsClientMessage {
+    Connect(WsConnectRequest)
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+struct WsConnectRequest {
+    lobby_id: String,
+    token: String,
+}
+
+static NEXT_CONNECTION_ID: AtomicUsize = AtomicUsize::new(1);
+
+async fn handle_websocket(
+    ws: WebSocket,
+    mgr: Arc<Mutex<LobbyManager>>
+)
+{
+    let conn_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = mpsc::unbounded_channel();
+    let (ws_tx, mut ws_rx) = ws.split();
+
+    let messages = rx.map(|text| {
+        Ok(warp::ws::Message::text(text))
+    });
+    tokio::task::spawn(messages.forward(ws_tx).map(|res| {
+        if let Err(e) = res {
+            eprintln!("websocket send error: {}", e);
+        }
+    }));
+
+    while let Some(res) = ws_rx.next().await {
+        let ws_msg = match res {
+            Ok(ws_msg) => ws_msg,
+            Err(e) => {
+                eprintln!("websocket error(uid={}): {}", conn_id, e);
+                return;
+            }
+        };
+
+        // TODO: UGLY UGh
+        let client_msg: WsClientMessage = match ws_msg.to_str() {
+            Ok(text) => match serde_json::from_str(text) {
+                Ok(req) => req,
+                Err(_) => continue,
+            }
+            Err(()) => continue,
+        };
+
+        match client_msg {
+            WsClientMessage::Connect(req) => {
+                let mut lobby_mgr = mgr.lock().unwrap();
+                if lobby_mgr.lobbies.contains_key(&req.lobby_id) {
+                    lobby_mgr.websocket_connections
+                        .entry(req.lobby_id)
+                        .or_insert_with(|| Vec::new())
+                        .push(WsConnection {
+                            conn_id,
+                            tx: tx.clone(),
+                        })
+                }
+            }
         }
     }
 }
@@ -514,7 +602,7 @@ async fn main() {
         .map(delete_lobby_by_id);
 
     // POST /lobbies/<id>/players
-    let post_lobbies_id_players_route = warp::path!("lobbies" / String / "players")
+    let post_lobbies_id_players_route = warp::path!("lobbies" / String / "join")
         .and(warp::path::end())
         .and(warp::post())
         .and(with_lobby_manager(lobby_manager.clone()))
@@ -561,6 +649,14 @@ async fn main() {
         .and(with_game_manager(game_manager.clone()))
         .map(get_match_log);
 
+    let websocket_route = warp::path("websocket")
+        .and(warp::path::end())
+        .and(warp::ws())
+        .and(with_lobby_manager(lobby_manager.clone()))
+        .map(|ws: warp::ws::Ws, mgr| {
+            ws.on_upgrade(move |socket| handle_websocket(socket, mgr))
+        });
+
     let routes = post_lobbies_route
                               .or(get_lobbies_id_route)
                               .or(get_lobbies_route)
@@ -571,7 +667,8 @@ async fn main() {
                               .or(delete_lobbies_id_players_route)
                               .or(post_lobbies_id_start_route)
                               .or(get_matches_route)
-                              .or(get_match_route);
+                              .or(get_match_route)
+                              .or(websocket_route);
     
     warp::serve(routes).run(([127, 0, 0, 1], 7412)).await;
 }
