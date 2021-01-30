@@ -28,3 +28,5 @@ hex = { version = "0.4", features = ["serde"] }
 mozaic-core = { git = "https://github.com/iasoon/MOZAIC2", rev="87ae4836" }
 rand = "0.7.3"
 planetwars-rules = { path = "./planetwars-rules" }
+
+uuid = { version = "0.8.2", features = ["v4"] }

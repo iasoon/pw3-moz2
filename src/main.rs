@@ -12,6 +12,7 @@ mod planetwars;
 use mozaic_core::{Token, GameServer, MatchCtx};
 use mozaic_core::msg_stream::{MsgStreamHandle};
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use std::{convert::Infallible, unimplemented};
 use warp::{reply::{json,Reply,Response}, ws::WebSocket};
@@ -225,6 +226,44 @@ impl WsConnection {
         self.tx.send(msg).map_err(|_| ())
     }
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+struct AcceptingPlayer {
+    name: String,
+    accepted: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ProposalParams {
+    owner: String,
+    config: planetwars::Config,
+    playerlist: Vec<String>
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Proposal {
+    owner: String,
+    config: planetwars::Config,
+    playerlist: Vec<AcceptingPlayer>,
+    id: String
+}
+
+impl From<ProposalParams> for Proposal {
+    fn from(params: ProposalParams) -> Proposal {
+        Proposal {
+            owner: params.owner,
+            config: params.config,
+            playerlist: params.playerlist.iter().map(|name| {
+                AcceptingPlayer {
+                    name: name.to_string(),
+                    accepted: false,
+                }
+            }).collect(),
+            id: Uuid::new_v4().to_hyphenated().to_string(),
+        }
+    }
+}
+
 // TODO
 #[derive(Serialize, Deserialize)]
 #[serde(tag="type", content = "data")]
@@ -423,6 +462,19 @@ fn remove_player_from_lobby(
         },
         None => warp::http::StatusCode::NOT_FOUND.into_response()
     }
+}
+
+fn add_proposal_to_lobby(
+    id: String,
+    mgr: Arc<Mutex<LobbyManager>>,
+    authorization: Option<String>,
+    params: ProposalParams
+) -> Response {
+    let proposal: Proposal = params.into();
+    return warp::reply::with_status(
+        json(&proposal),
+        warp::http::StatusCode::OK
+    ).into_response();
 }
 
 fn start_match_in_lobby(
@@ -666,6 +718,15 @@ async fn main() {
         .and(warp::body::json())
         .map(start_match_in_lobby);
     
+    // POST /lobbies/<id>/proposals
+    let post_lobbies_id_proposals_route = warp::path!("lobbies" / String / "proposals")
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(with_lobby_manager(lobby_manager.clone()))
+        .and(warp::header::optional::<String>("authorization"))
+        .and(warp::body::json())
+        .map(add_proposal_to_lobby);
+    
     // GET /matches
     let get_matches_route = warp::path("matches")
         .and(warp::path::end())
@@ -697,6 +758,7 @@ async fn main() {
                               .or(put_lobbies_id_players_route)
                               .or(delete_lobbies_id_players_route)
                               .or(post_lobbies_id_start_route)
+                              .or(post_lobbies_id_proposals_route)
                               .or(get_matches_route)
                               .or(get_match_route)
                               .or(websocket_route);
