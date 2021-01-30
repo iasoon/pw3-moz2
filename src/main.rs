@@ -5,7 +5,7 @@ use mpsc::UnboundedSender;
 use serde::{Deserialize, Serialize};
 
 use mozaic_core::client_manager::ClientHandle;
-use futures::{FutureExt, stream, StreamExt};
+use futures::{FutureExt, StreamExt, channel::mpsc::SendError, stream};
 
 mod planetwars;
 
@@ -199,10 +199,17 @@ impl LobbyManager {
         lobby
     }
 
-    pub fn send_update(&mut self, lobby_id: &str, msg: String) {
+    pub fn send_update(&mut self, lobby_id: &str, ev: LobbyEvent) {
+        let serialized = serde_json::to_string(&ev).unwrap();
         if let Some(connections) = self.websocket_connections.get_mut(lobby_id) {
-            for conn in connections {
-                conn.send(msg.clone())
+            let mut i = 0;
+            while i < connections.len() {
+                if connections[i].send(serialized.clone()).is_ok() {
+                    i += 1;
+                } else {
+                    // connection dropped, remove it from the list
+                    connections.swap_remove(i);
+                }
             }
         }
     }
@@ -214,12 +221,17 @@ struct WsConnection {
 }
 
 impl WsConnection {
-    pub fn send(&mut self, msg: String) {
-        self.tx.send(msg).unwrap();
+    pub fn send(&mut self, msg: String) -> Result<(), ()> {
+        self.tx.send(msg).map_err(|_| ())
     }
 }
 // TODO
+#[derive(Serialize, Deserialize)]
+#[serde(tag="type", content = "data")]
+#[serde(rename_all="camelCase")]
 enum LobbyEvent {
+    LobbyState(StrippedLobby),
+    PlayerData(StrippedPlayer),
 }
 
 async fn run_match(
@@ -340,13 +352,23 @@ fn add_player_to_lobby(
     player: Player,
 ) -> Response {
     let mut manager = mgr.lock().unwrap();
-    match manager.lobbies.get_mut(&id.to_lowercase()) {
+    // TODO: translate this in a filter maybe?
+    let lobby_id = id.to_lowercase();
+
+
+    match manager.lobbies.get_mut(&lobby_id) {
+        None => return warp::http::StatusCode::NOT_FOUND.into_response(),
         Some(lobby) => {
-            lobby.players.insert(player.name.clone(), player);
-            return warp::http::StatusCode::OK.into_response();
+            // TODO: we should check whether the name is available
+            lobby.players.insert(player.name.clone(), player.clone());
         },
-        None => warp::http::StatusCode::NOT_FOUND.into_response()
     }
+
+    // update other clients
+    manager.send_update(&lobby_id, LobbyEvent::PlayerData(StrippedPlayer::from(player)));
+
+    // TODO: maybe return player?
+    return warp::http::StatusCode::OK.into_response();
 }
 
 fn update_player_in_lobby(
@@ -485,6 +507,7 @@ fn get_match_log(
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[serde(rename_all="camelCase")]
 enum WsClientMessage {
     Connect(WsConnectRequest)
 }
@@ -528,7 +551,10 @@ async fn handle_websocket(
         let client_msg: WsClientMessage = match ws_msg.to_str() {
             Ok(text) => match serde_json::from_str(text) {
                 Ok(req) => req,
-                Err(_) => continue,
+                Err(err) => {
+                    eprintln!("{}", err);
+                    continue
+                }
             }
             Err(()) => continue,
         };
@@ -536,15 +562,20 @@ async fn handle_websocket(
         match client_msg {
             WsClientMessage::Connect(req) => {
                 let mut lobby_mgr = mgr.lock().unwrap();
-                if lobby_mgr.lobbies.contains_key(&req.lobby_id) {
+
+                lobby_mgr.lobbies.get(&req.lobby_id).map(|lobby| {
+                    let lobby_data = LobbyEvent::LobbyState(StrippedLobby::from(lobby.clone()));
+                    let resp = serde_json::to_string(&lobby_data).unwrap();
+                    tx.send(resp).unwrap();
+                }).map(|_| {
                     lobby_mgr.websocket_connections
                         .entry(req.lobby_id)
                         .or_insert_with(|| Vec::new())
                         .push(WsConnection {
                             conn_id,
                             tx: tx.clone(),
-                        })
-                }
+                        });
+                });
             }
         }
     }
