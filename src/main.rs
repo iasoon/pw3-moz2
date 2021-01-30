@@ -470,11 +470,27 @@ fn add_proposal_to_lobby(
     authorization: Option<String>,
     params: ProposalParams
 ) -> Response {
-    let proposal: Proposal = params.into();
-    return warp::reply::with_status(
-        json(&proposal),
-        warp::http::StatusCode::OK
-    ).into_response();
+    let mut manager = mgr.lock().unwrap();
+    match manager.lobbies.get_mut(&id.to_lowercase()) {
+        Some(lobby) => {
+            match lobby.players.get(&params.owner) {
+                Some(player) => {
+                    if player.authorize_header(&authorization) {
+                        let proposal: Proposal = params.into();
+                        warp::reply::with_status(
+                            json(&proposal),
+                            warp::http::StatusCode::OK
+                        ).into_response()
+                    } else {
+                        warp::http::StatusCode::UNAUTHORIZED.into_response()
+                    }
+                }
+                None => warp::http::StatusCode::NOT_FOUND.into_response()
+            }
+        },
+        None => warp::http::StatusCode::NOT_FOUND.into_response()
+    }
+
 }
 
 fn start_match_in_lobby(
