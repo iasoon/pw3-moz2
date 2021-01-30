@@ -78,6 +78,7 @@ impl GameManager {
         self.matches.insert(match_id.clone(),
             MatchData { log: log.clone() }
         );
+        println!("Starting match");
         tokio::spawn(run_match(
             clients,
             self.game_server.clone(),
@@ -98,6 +99,7 @@ struct Lobby {
     name: String,
     public: bool,
     players: HashMap<String,Player>,
+    proposals: HashMap<String, Proposal>,
     // #[serde(with = "hex")]
     lobby_token: Token,
 }
@@ -114,7 +116,6 @@ struct StrippedLobby {
 struct LobbyConfig {
     name: String,
     public: bool,
-    match_config: planetwars::Config,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -136,6 +137,7 @@ impl From<LobbyConfig> for Lobby {
             public: config.public,
             players: HashMap::new(),
             lobby_token: rand::thread_rng().gen(),
+            proposals: HashMap::new(),
         }
     }
 }
@@ -227,7 +229,7 @@ impl WsConnection {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct AcceptingPlayer {
     name: String,
     accepted: bool,
@@ -237,14 +239,14 @@ struct AcceptingPlayer {
 struct ProposalParams {
     owner: String,
     config: planetwars::Config,
-    playerlist: Vec<String>
+    players: Vec<String>
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Proposal {
     owner: String,
     config: planetwars::Config,
-    playerlist: Vec<AcceptingPlayer>,
+    players: Vec<AcceptingPlayer>,
     id: String
 }
 
@@ -253,7 +255,7 @@ impl From<ProposalParams> for Proposal {
         Proposal {
             owner: params.owner,
             config: params.config,
-            playerlist: params.playerlist.iter().map(|name| {
+            players: params.players.iter().map(|name| {
                 AcceptingPlayer {
                     name: name.to_string(),
                     accepted: false,
@@ -477,6 +479,7 @@ fn add_proposal_to_lobby(
                 Some(player) => {
                     if player.authorize_header(&authorization) {
                         let proposal: Proposal = params.into();
+                        lobby.proposals.insert(proposal.id.clone(), proposal.clone());
                         warp::reply::with_status(
                             json(&proposal),
                             warp::http::StatusCode::OK
@@ -493,53 +496,78 @@ fn add_proposal_to_lobby(
 
 }
 
-fn start_match_in_lobby(
-    id: String,
+fn start_proposal(
+    lobby_id: String,
+    proposal_id: String,
     mgr: Arc<Mutex<LobbyManager>>,
     authorization: Option<String>,
-    config: MatchStartConfig,
 ) -> Response {
     let mut manager = mgr.lock().unwrap();
     let game_mgr = manager.game_manager.clone();
     let mut game_manager = game_mgr.lock().unwrap();
-    match manager.lobbies.get_mut(&id.to_lowercase()) {
+    match manager.lobbies.get_mut(&lobby_id.to_lowercase()) {
         Some(lobby) => {
-            if lobby.authorize_header(&authorization) {
-                let mut tokens = vec![];
-                for player_name in config.players.iter() {
-                    let player_opt = lobby.players.get(player_name);
-                    if player_opt.is_none() {
-                        return warp::reply::with_status(
-                            format!("Player {} not found", player_name),
-                            warp::http::StatusCode::NOT_FOUND
-                        ).into_response();
-                    }
-                    let player = player_opt.unwrap();
-                    // TODO
-                    // if !player.ready {
-                    //     return warp::reply::with_status(
-                    //         "Not all players are ready",
-                    //         warp::http::StatusCode::BAD_REQUEST
-                    //     ).into_response();
-                    // }
+            match lobby.proposals.get(&proposal_id) {
+                Some(proposal) => {
+                    match lobby.players.get(&proposal.owner) {
+                        Some(player) => {
+                            if player.authorize_header(&authorization) {
+                                let mut tokens = vec![];
+                                for accepting_player in proposal.players.iter() {
+                                    let player_opt = lobby.players.get(&accepting_player.name);
+                                    if player_opt.is_none() {
+                                        return warp::reply::with_status(
+                                            format!("Player {} not found", accepting_player.name),
+                                            warp::http::StatusCode::NOT_FOUND
+                                        ).into_response();
+                                    }
+                                    let player = player_opt.unwrap();
+                                    // TODO
+                                    // if !player.ready {
+                                    //     return warp::reply::with_status(
+                                    //         "Not all players are ready",
+                                    //         warp::http::StatusCode::BAD_REQUEST
+                                    //     ).into_response();
+                                    // }
 
-                    tokens.push(player.token);
+                                    tokens.push(player.token);
+                                }
+                                // TODO
+                                // for player_name in config.players.iter() {
+                                //     lobby.players.get_mut(player_name).unwrap().ready = false;
+                                // }
+                                let match_config: planetwars::Config = proposal.config.clone();
+                                let match_id = game_manager.create_match(tokens, match_config.clone());
+                                return warp::reply::with_status(
+                                    json(&MatchStartResult { match_id }),
+                                    warp::http::StatusCode::OK
+                                ).into_response();
+                            } else {
+                                warp::http::StatusCode::UNAUTHORIZED.into_response()
+                            }
+                        }
+                        None => {
+                            warp::reply::with_status(
+                                format!("Proposal owner {} not found", proposal.owner),
+                                warp::http::StatusCode::NOT_FOUND
+                            ).into_response()
+                        }
+                    }
                 }
-                // TODO
-                // for player_name in config.players.iter() {
-                //     lobby.players.get_mut(player_name).unwrap().ready = false;
-                // }
-                let match_config: planetwars::Config = unimplemented!();
-                let match_id = game_manager.create_match(tokens, match_config.clone());
-                return warp::reply::with_status(
-                    json(&MatchStartResult { match_id }),
-                    warp::http::StatusCode::OK
-                ).into_response();
-            } else {
-                return warp::http::StatusCode::UNAUTHORIZED.into_response();
+                None => {
+                    warp::reply::with_status(
+                        format!("Proposal {} not found", proposal_id),
+                        warp::http::StatusCode::NOT_FOUND
+                    ).into_response()
+                }
             }
         },
-        None => warp::http::StatusCode::NOT_FOUND.into_response()
+        None => {
+            warp::reply::with_status(
+                format!("Lobby {} not found", lobby_id),
+                warp::http::StatusCode::NOT_FOUND
+            ).into_response()
+        }
     }
 }
 
@@ -700,7 +728,7 @@ async fn main() {
         .and(warp::header::optional::<String>("authorization"))
         .map(delete_lobby_by_id);
 
-    // POST /lobbies/<id>/players
+    // POST /lobbies/<id>/join
     let post_lobbies_id_players_route = warp::path!("lobbies" / String / "join")
         .and(warp::path::end())
         .and(warp::post())
@@ -725,15 +753,6 @@ async fn main() {
         .and(warp::header::optional::<String>("authorization"))
         .map(remove_player_from_lobby);
 
-    // POST /lobbies/<id>/start
-    let post_lobbies_id_start_route = warp::path!("lobbies" / String / "start")
-        .and(warp::path::end())
-        .and(warp::post())
-        .and(with_lobby_manager(lobby_manager.clone()))
-        .and(warp::header::optional::<String>("authorization"))
-        .and(warp::body::json())
-        .map(start_match_in_lobby);
-    
     // POST /lobbies/<id>/proposals
     let post_lobbies_id_proposals_route = warp::path!("lobbies" / String / "proposals")
         .and(warp::path::end())
@@ -742,6 +761,14 @@ async fn main() {
         .and(warp::header::optional::<String>("authorization"))
         .and(warp::body::json())
         .map(add_proposal_to_lobby);
+    
+    // POST /lobbies/<lobby_id>/proposals/<proposal_id>/start
+    let post_lobbies_id_proposals_id_start_route = warp::path!("lobbies" / String / "proposals" / String / "start")
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(with_lobby_manager(lobby_manager.clone()))
+        .and(warp::header::optional::<String>("authorization"))
+        .map(start_proposal);
     
     // GET /matches
     let get_matches_route = warp::path("matches")
@@ -773,7 +800,7 @@ async fn main() {
                               .or(post_lobbies_id_players_route)
                               .or(put_lobbies_id_players_route)
                               .or(delete_lobbies_id_players_route)
-                              .or(post_lobbies_id_start_route)
+                              .or(post_lobbies_id_proposals_id_start_route)
                               .or(post_lobbies_id_proposals_route)
                               .or(get_matches_route)
                               .or(get_match_route)
