@@ -229,10 +229,17 @@ impl WsConnection {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+enum AcceptedState {
+    Unanswered,
+    Accepted,
+    Rejected,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct AcceptingPlayer {
     name: String,
-    accepted: bool,
+    status: AcceptedState,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -258,7 +265,7 @@ impl From<ProposalParams> for Proposal {
             players: params.players.iter().map(|name| {
                 AcceptingPlayer {
                     name: name.to_string(),
-                    accepted: false,
+                    status: AcceptedState::Unanswered
                 }
             }).collect(),
             id: Uuid::new_v4().to_hyphenated().to_string(),
@@ -522,20 +529,15 @@ fn start_proposal(
                                         ).into_response();
                                     }
                                     let player = player_opt.unwrap();
-                                    // TODO
-                                    // if !player.ready {
-                                    //     return warp::reply::with_status(
-                                    //         "Not all players are ready",
-                                    //         warp::http::StatusCode::BAD_REQUEST
-                                    //     ).into_response();
-                                    // }
+                                    if accepting_player.status != AcceptedState::Accepted {
+                                        return warp::reply::with_status(
+                                            "Not all players are ready",
+                                            warp::http::StatusCode::BAD_REQUEST
+                                        ).into_response();
+                                    }
 
                                     tokens.push(player.token);
                                 }
-                                // TODO
-                                // for player_name in config.players.iter() {
-                                //     lobby.players.get_mut(player_name).unwrap().ready = false;
-                                // }
                                 let match_config: planetwars::Config = proposal.config.clone();
                                 let match_id = game_manager.create_match(tokens, match_config.clone());
                                 return warp::reply::with_status(
@@ -549,6 +551,69 @@ fn start_proposal(
                         None => {
                             warp::reply::with_status(
                                 format!("Proposal owner {} not found", proposal.owner),
+                                warp::http::StatusCode::NOT_FOUND
+                            ).into_response()
+                        }
+                    }
+                }
+                None => {
+                    warp::reply::with_status(
+                        format!("Proposal {} not found", proposal_id),
+                        warp::http::StatusCode::NOT_FOUND
+                    ).into_response()
+                }
+            }
+        },
+        None => {
+            warp::reply::with_status(
+                format!("Lobby {} not found", lobby_id),
+                warp::http::StatusCode::NOT_FOUND
+            ).into_response()
+        }
+    }
+}
+
+fn set_player_accepted_state(
+    lobby_id: String,
+    proposal_id: String,
+    mgr: Arc<Mutex<LobbyManager>>,
+    authorization: Option<String>,
+    new_status: AcceptingPlayer,
+) -> Response {
+    let mut manager = mgr.lock().unwrap();
+    let game_mgr = manager.game_manager.clone();
+    let mut game_manager = game_mgr.lock().unwrap();
+    match manager.lobbies.get_mut(&lobby_id.to_lowercase()) {
+        Some(lobby) => {
+            match lobby.proposals.get_mut(&proposal_id) {
+                Some(proposal) => {
+                    match lobby.players.get(&new_status.name) {
+                        Some(player) => {
+                            if player.authorize_header(&authorization) {
+                                proposal.players = proposal.players.iter().map(|player| {
+                                    if player.name == new_status.name {
+                                        AcceptingPlayer {
+                                            name: player.name.clone(),
+                                            status: new_status.status.clone()
+                                        }.clone()
+                                    } else {
+                                        player.clone()
+                                    }
+                                }).collect();
+                                warp::reply::with_status(
+                                    format!(""),
+                                    warp::http::StatusCode::OK
+                                ).into_response()
+                            } else {
+                                warp::reply::with_status(
+                                    format!("Not authorized to modify ready state for {}", player.name),
+                                    warp::http::StatusCode::UNAUTHORIZED
+                                ).into_response()
+                            }
+                        }
+                        None => {
+                            warp::reply::with_status(
+                                format!("Player {} not found", new_status.name),
                                 warp::http::StatusCode::NOT_FOUND
                             ).into_response()
                         }
@@ -770,6 +835,15 @@ async fn main() {
         .and(warp::header::optional::<String>("authorization"))
         .map(start_proposal);
     
+    // POST /lobbies/<lobby_id>/proposals/<proposal_id>/accept
+    let post_lobbies_id_proposals_id_accept_route = warp::path!("lobbies" / String / "proposals" / String / "accept")
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(with_lobby_manager(lobby_manager.clone()))
+        .and(warp::header::optional::<String>("authorization"))
+        .and(warp::body::json())
+        .map(set_player_accepted_state);
+    
     // GET /matches
     let get_matches_route = warp::path("matches")
         .and(warp::path::end())
@@ -802,6 +876,7 @@ async fn main() {
                               .or(delete_lobbies_id_players_route)
                               .or(post_lobbies_id_proposals_id_start_route)
                               .or(post_lobbies_id_proposals_route)
+                              .or(post_lobbies_id_proposals_id_accept_route)
                               .or(get_matches_route)
                               .or(get_match_route)
                               .or(websocket_route);
