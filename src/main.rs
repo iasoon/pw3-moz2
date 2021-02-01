@@ -100,6 +100,7 @@ struct Lobby {
     public: bool,
     players: HashMap<String,Player>,
     proposals: HashMap<String, Proposal>,
+    matches: HashMap<String, MatchMeta>,
     // #[serde(with = "hex")]
     lobby_token: Token,
 }
@@ -110,6 +111,8 @@ struct StrippedLobby {
     name: String,
     public: bool,
     players: HashMap<String,StrippedPlayer>,
+    proposals: HashMap<String, Proposal>,
+    matches: HashMap<String, MatchMeta>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -138,6 +141,7 @@ impl From<LobbyConfig> for Lobby {
             players: HashMap::new(),
             lobby_token: rand::thread_rng().gen(),
             proposals: HashMap::new(),
+            matches: HashMap::new(),
         }
     }
 }
@@ -149,6 +153,8 @@ impl From<Lobby> for StrippedLobby {
             name: lobby.name,
             public: lobby.public,
             players: lobby.players.iter().map(|(k,v)| (k.clone(),StrippedPlayer::from(v.clone()))).collect(),
+            proposals: lobby.proposals.clone(),
+            matches: lobby.matches.clone(),
         }
     }
 }
@@ -273,6 +279,11 @@ impl From<ProposalParams> for Proposal {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct MatchMeta {
+    id: String,
+}
+
 // TODO
 #[derive(Serialize, Deserialize)]
 #[serde(tag="type", content = "data")]
@@ -280,6 +291,7 @@ impl From<ProposalParams> for Proposal {
 enum LobbyEvent {
     LobbyState(StrippedLobby),
     PlayerData(StrippedPlayer),
+    ProposalData(Proposal),
 }
 
 async fn run_match(
@@ -474,32 +486,38 @@ fn remove_player_from_lobby(
 }
 
 fn add_proposal_to_lobby(
-    id: String,
+    lobby_id: String,
     mgr: Arc<Mutex<LobbyManager>>,
     authorization: Option<String>,
     params: ProposalParams
 ) -> Response {
     let mut manager = mgr.lock().unwrap();
-    match manager.lobbies.get_mut(&id.to_lowercase()) {
-        Some(lobby) => {
-            match lobby.players.get(&params.owner) {
-                Some(player) => {
-                    if player.authorize_header(&authorization) {
-                        let proposal: Proposal = params.into();
-                        lobby.proposals.insert(proposal.id.clone(), proposal.clone());
-                        warp::reply::with_status(
-                            json(&proposal),
-                            warp::http::StatusCode::OK
-                        ).into_response()
-                    } else {
-                        warp::http::StatusCode::UNAUTHORIZED.into_response()
-                    }
-                }
-                None => warp::http::StatusCode::NOT_FOUND.into_response()
-            }
-        },
-        None => warp::http::StatusCode::NOT_FOUND.into_response()
-    }
+    let lobby_id = lobby_id.to_lowercase();
+
+    let proposal = {
+        let lobby = match manager.lobbies.get_mut(&lobby_id) {
+            None => return warp::http::StatusCode::NOT_FOUND.into_response(),
+            Some(lobby) => lobby
+        };
+    
+        let _owner = match lobby.players.get(&params.owner) {
+            None => return warp::http::StatusCode::NOT_FOUND.into_response(),
+            Some(player) if player.authorize_header(&authorization) => player,
+            Some(_player) => return warp::http::StatusCode::UNAUTHORIZED.into_response(),
+        };
+
+        let proposal: Proposal = params.into();
+        lobby.proposals.insert(proposal.id.clone(), proposal.clone());
+        proposal  
+    };
+
+    manager.send_update(&lobby_id, LobbyEvent::ProposalData(proposal.clone()));
+
+    warp::reply::with_status(
+        json(&proposal),
+        warp::http::StatusCode::OK
+    ).into_response()
+        
 
 }
 
@@ -509,68 +527,81 @@ fn start_proposal(
     mgr: Arc<Mutex<LobbyManager>>,
     authorization: Option<String>,
 ) -> Response {
+    let lobby_id = lobby_id.to_lowercase();
     let mut manager = mgr.lock().unwrap();
-    let game_mgr = manager.game_manager.clone();
-    let mut game_manager = game_mgr.lock().unwrap();
-    match manager.lobbies.get_mut(&lobby_id.to_lowercase()) {
-        Some(lobby) => {
-            match lobby.proposals.get(&proposal_id) {
-                Some(proposal) => {
-                    match lobby.players.get(&proposal.owner) {
-                        Some(player) => {
-                            if player.authorize_header(&authorization) {
-                                let mut tokens = vec![];
-                                for accepting_player in proposal.players.iter() {
-                                    let player_opt = lobby.players.get(&accepting_player.name);
-                                    if player_opt.is_none() {
-                                        return warp::reply::with_status(
-                                            format!("Player {} not found", accepting_player.name),
-                                            warp::http::StatusCode::NOT_FOUND
-                                        ).into_response();
-                                    }
-                                    let player = player_opt.unwrap();
-                                    if accepting_player.status != AcceptedState::Accepted {
-                                        return warp::reply::with_status(
-                                            "Not all players are ready",
-                                            warp::http::StatusCode::BAD_REQUEST
-                                        ).into_response();
-                                    }
 
-                                    tokens.push(player.token);
-                                }
-                                let match_config: planetwars::Config = proposal.config.clone();
-                                let match_id = game_manager.create_match(tokens, match_config.clone());
-                                return warp::reply::with_status(
-                                    json(&MatchStartResult { match_id }),
-                                    warp::http::StatusCode::OK
-                                ).into_response();
-                            } else {
-                                warp::http::StatusCode::UNAUTHORIZED.into_response()
-                            }
-                        }
-                        None => {
-                            warp::reply::with_status(
-                                format!("Proposal owner {} not found", proposal.owner),
-                                warp::http::StatusCode::NOT_FOUND
-                            ).into_response()
-                        }
-                    }
-                }
-                None => {
-                    warp::reply::with_status(
-                        format!("Proposal {} not found", proposal_id),
-                        warp::http::StatusCode::NOT_FOUND
-                    ).into_response()
+    let proposal = {
+        let game_mgr = manager.game_manager.clone();
+        let mut game_manager = game_mgr.lock().unwrap();
+
+        let lobby = match manager.lobbies.get_mut(&lobby_id) {
+            None => {
+                return warp::reply::with_status(
+                    format!("Lobby {} not found", lobby_id),
+                    warp::http::StatusCode::NOT_FOUND
+                ).into_response()
+            }
+            Some(lobby) => lobby,
+        };
+        let proposal = match lobby.proposals.get(&proposal_id) {
+            None => {
+                return warp::reply::with_status(
+                    format!("Proposal {} not found", proposal_id),
+                    warp::http::StatusCode::NOT_FOUND
+                ).into_response()
+            }
+            Some(proposal) => proposal
+        };
+
+        // authorize
+        match lobby.players.get(&proposal.owner) {
+            None => {
+                return warp::reply::with_status(
+                    format!("Proposal owner {} not found", proposal.owner),
+                    warp::http::StatusCode::NOT_FOUND
+                ).into_response()
+            },
+            Some(player) => {
+                if !player.authorize_header(&authorization) {
+                    return warp::http::StatusCode::UNAUTHORIZED.into_response();
                 }
             }
-        },
-        None => {
-            warp::reply::with_status(
-                format!("Lobby {} not found", lobby_id),
-                warp::http::StatusCode::NOT_FOUND
-            ).into_response()
         }
-    }
+
+        let mut tokens = vec![];
+
+        for accepting_player in proposal.players.iter() {
+            let player_opt = lobby.players.get(&accepting_player.name);
+            // I think this should never happen?
+            if player_opt.is_none() {
+                return warp::reply::with_status(
+                    format!("Player {} does not exist in this lobby", accepting_player.name),
+                    warp::http::StatusCode::BAD_REQUEST
+                ).into_response();
+            }
+            let player = player_opt.unwrap();
+            if accepting_player.status != AcceptedState::Accepted {
+                return warp::reply::with_status(
+                    "Not all players are ready",
+                    warp::http::StatusCode::BAD_REQUEST
+                ).into_response();
+            }
+
+            tokens.push(player.token);
+        }
+        let match_config: planetwars::Config = proposal.config.clone();
+        let match_id = game_manager.create_match(tokens, match_config.clone());
+        let match_meta = MatchMeta { id: match_id };
+        lobby.matches.insert(match_meta.id.clone(), match_meta.clone());
+        proposal.clone()
+    };
+
+    manager.send_update(&lobby_id, LobbyEvent::ProposalData(proposal.clone()));
+
+    return warp::reply::with_status(
+        json(&proposal),
+        warp::http::StatusCode::OK
+    ).into_response();
 }
 
 fn set_player_accepted_state(
@@ -581,59 +612,57 @@ fn set_player_accepted_state(
     new_status: AcceptingPlayer,
 ) -> Response {
     let mut manager = mgr.lock().unwrap();
-    let game_mgr = manager.game_manager.clone();
-    let mut game_manager = game_mgr.lock().unwrap();
-    match manager.lobbies.get_mut(&lobby_id.to_lowercase()) {
-        Some(lobby) => {
-            match lobby.proposals.get_mut(&proposal_id) {
-                Some(proposal) => {
-                    match lobby.players.get(&new_status.name) {
-                        Some(player) => {
-                            if player.authorize_header(&authorization) {
-                                proposal.players = proposal.players.iter().map(|player| {
-                                    if player.name == new_status.name {
-                                        AcceptingPlayer {
-                                            name: player.name.clone(),
-                                            status: new_status.status.clone()
-                                        }.clone()
-                                    } else {
-                                        player.clone()
-                                    }
-                                }).collect();
-                                warp::reply::with_status(
-                                    format!(""),
-                                    warp::http::StatusCode::OK
-                                ).into_response()
-                            } else {
-                                warp::reply::with_status(
-                                    format!("Not authorized to modify ready state for {}", player.name),
-                                    warp::http::StatusCode::UNAUTHORIZED
-                                ).into_response()
-                            }
-                        }
-                        None => {
-                            warp::reply::with_status(
-                                format!("Player {} not found", new_status.name),
-                                warp::http::StatusCode::NOT_FOUND
-                            ).into_response()
-                        }
-                    }
-                }
-                None => {
-                    warp::reply::with_status(
-                        format!("Proposal {} not found", proposal_id),
-                        warp::http::StatusCode::NOT_FOUND
-                    ).into_response()
-                }
+    let lobby_id = lobby_id.to_lowercase();
+
+    let proposal = {
+        let lobby = match manager.lobbies.get_mut(&lobby_id) {
+            None => {
+                return warp::reply::with_status(
+                    format!("Lobby {} not found", lobby_id),
+                    warp::http::StatusCode::NOT_FOUND
+                ).into_response()
             }
-        },
-        None => {
-            warp::reply::with_status(
-                format!("Lobby {} not found", lobby_id),
+            Some(lobby) => lobby,
+        };
+
+        let proposal = match lobby.proposals.get_mut(&proposal_id) {
+            Some(proposal) => proposal,
+            None => return                     warp::reply::with_status(
+                format!("Proposal {} not found", proposal_id),
                 warp::http::StatusCode::NOT_FOUND
             ).into_response()
+        };
+
+        // authorize
+        match lobby.players.get(&new_status.name) {
+            None => {
+                return warp::reply::with_status(
+                    format!("player {} not found", new_status.name),
+                    warp::http::StatusCode::NOT_FOUND
+                ).into_response()
+            },
+            Some(player) => {
+                if !player.authorize_header(&authorization) {
+                    return warp::http::StatusCode::UNAUTHORIZED.into_response();
+                }
+            }
+        };
+        
+        for player in proposal.players.iter_mut() {
+            if player.name == new_status.name {
+                player.status = new_status.status.clone();
+            }
         }
-    }
+
+        proposal.clone()
+    };
+
+    manager.send_update(&lobby_id, LobbyEvent::ProposalData(proposal.clone()));
+
+    warp::reply::with_status(
+        json(&proposal),
+        warp::http::StatusCode::OK
+    ).into_response()
 }
 
 fn gen_match_id() -> String {
