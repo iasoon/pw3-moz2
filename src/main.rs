@@ -68,7 +68,9 @@ struct MatchData {
 }
 
 impl GameManager {
-    fn create_match(&mut self, tokens: Vec<Token>, game_config: planetwars::Config) -> String {
+    fn create_match<F>(&mut self, tokens: Vec<Token>, game_config: planetwars::Config, cb: F) -> String
+        where F: 'static + Send + Sync + FnOnce(String) -> ()
+    {
         let clients = tokens.iter().map(|token| {
             self.game_server.get_client(&token)
         }).collect::<Vec<_>>();
@@ -78,12 +80,13 @@ impl GameManager {
         self.matches.insert(match_id.clone(),
             MatchData { log: log.clone() }
         );
-        println!("Starting match");
+        println!("Starting match {}", &match_id);
+        let cb_match_id = match_id.clone();
         tokio::spawn(run_match(
             clients,
             self.game_server.clone(),
             game_config,
-            log)
+            log).map(|_| cb(cb_match_id))
         );
         return match_id;
     }
@@ -279,9 +282,17 @@ impl From<ProposalParams> for Proposal {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all="camelCase")]
+enum MatchStatus {
+    Playing,
+    Done,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct MatchMeta {
     id: String,
+    status: MatchStatus,
 }
 
 // TODO
@@ -292,6 +303,7 @@ enum LobbyEvent {
     LobbyState(StrippedLobby),
     PlayerData(StrippedPlayer),
     ProposalData(Proposal),
+    MatchData(MatchMeta),
 }
 
 async fn run_match(
@@ -590,8 +602,25 @@ fn start_proposal(
             tokens.push(player.token);
         }
         let match_config: planetwars::Config = proposal.config.clone();
-        let match_id = game_manager.create_match(tokens, match_config.clone());
-        let match_meta = MatchMeta { id: match_id };
+
+        let cb_mgr = mgr.clone();
+        let cb_lobby_id = lobby_id.clone();
+        let match_id = game_manager.create_match(tokens, match_config.clone(), move |match_id| {
+            println!("completed match {}", &match_id);
+            let match_meta = MatchMeta {
+                id: match_id.clone(),
+                status: MatchStatus::Done,
+            };
+            let mut mgr = cb_mgr.lock().unwrap();
+            mgr.lobbies.get_mut(&cb_lobby_id).map(|lobby| {
+                lobby.matches.insert(match_id.clone(), match_meta.clone());
+            });
+            mgr.send_update(&cb_lobby_id, LobbyEvent::MatchData(match_meta));
+        });
+        let match_meta = MatchMeta {
+            id: match_id,
+            status: MatchStatus::Playing,
+        };
         lobby.matches.insert(match_meta.id.clone(), match_meta.clone());
         proposal.clone()
     };
