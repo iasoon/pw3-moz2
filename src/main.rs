@@ -1,11 +1,10 @@
 #![feature(async_closure)]
 
 use mozaic_core::msg_stream::msg_stream;
-use mpsc::UnboundedSender;
 use serde::{Deserialize, Serialize};
 
 use mozaic_core::client_manager::ClientHandle;
-use futures::{FutureExt, StreamExt, channel::mpsc::SendError, stream};
+use futures::{FutureExt, StreamExt, stream};
 
 mod planetwars;
 
@@ -14,7 +13,7 @@ use mozaic_core::msg_stream::{MsgStreamHandle};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use std::{convert::Infallible, unimplemented};
+use std::{convert::Infallible};
 use warp::{reply::{json,Reply,Response}, ws::WebSocket};
 use warp::Filter;
 
@@ -127,11 +126,6 @@ struct LobbyConfig {
 #[derive(Serialize, Deserialize, Debug)]
 struct MatchStartConfig {
     players: Vec<String>
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct MatchStartResult {
-    match_id: String,
 }
 
 impl From<LobbyConfig> for Lobby {
@@ -260,10 +254,21 @@ struct ProposalParams {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Proposal {
+    id: String,
     owner: String,
     config: planetwars::Config,
     players: Vec<AcceptingPlayer>,
-    id: String
+    #[serde(flatten)]
+    status: ProposalStatus,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all="camelCase")]
+#[serde(tag="status")]
+enum ProposalStatus {
+    Pending,
+    Denied,
+    Accepted { match_id: String },
 }
 
 impl From<ProposalParams> for Proposal {
@@ -278,6 +283,7 @@ impl From<ProposalParams> for Proposal {
                 }
             }).collect(),
             id: Uuid::new_v4().to_hyphenated().to_string(),
+            status: ProposalStatus::Pending,
         }
     }
 }
@@ -555,14 +561,22 @@ fn start_proposal(
             }
             Some(lobby) => lobby,
         };
-        let proposal = match lobby.proposals.get(&proposal_id) {
+        let proposal = match lobby.proposals.get_mut(&proposal_id) {
             None => {
                 return warp::reply::with_status(
                     format!("Proposal {} not found", proposal_id),
                     warp::http::StatusCode::NOT_FOUND
                 ).into_response()
             }
-            Some(proposal) => proposal
+            Some(proposal) => {
+                match proposal.status {
+                    ProposalStatus::Pending => proposal,
+                    _ => return warp::reply::with_status(
+                        format!("Proposal {} is no longer valid", proposal_id),
+                        warp::http::StatusCode::BAD_REQUEST,
+                    ).into_response()
+                }
+            }
         };
 
         // authorize
@@ -618,12 +632,14 @@ fn start_proposal(
             mgr.send_update(&cb_lobby_id, LobbyEvent::MatchData(match_meta));
         });
         let match_meta = MatchMeta {
-            id: match_id,
+            id: match_id.clone(),
             status: MatchStatus::Playing,
         };
         lobby.matches.insert(match_meta.id.clone(), match_meta.clone());
+        proposal.status = ProposalStatus::Accepted { match_id };
         proposal.clone()
     };
+
 
     manager.send_update(&lobby_id, LobbyEvent::ProposalData(proposal.clone()));
 
@@ -682,6 +698,11 @@ fn set_player_accepted_state(
                 player.status = new_status.status.clone();
             }
         }
+
+        match new_status.status {
+            AcceptedState::Rejected => proposal.status = ProposalStatus::Denied,
+            _ => (),
+        };
 
         proposal.clone()
     };
