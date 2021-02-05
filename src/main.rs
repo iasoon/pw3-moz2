@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use std::{convert::Infallible};
-use warp::{reply::{json,Reply,Response}, ws::WebSocket};
+use warp::{hyper::server::accept::Accept, reply::{json,Reply,Response}, ws::WebSocket};
 use warp::Filter;
 
 
@@ -461,10 +461,9 @@ fn add_player_to_lobby(
     };
 
     // update other clients
-    manager.send_update(&lobby_id, LobbyEvent::PlayerData(player_data));
+    manager.send_update(&lobby_id, LobbyEvent::PlayerData(player_data.clone()));
 
-    // TODO: maybe return player?
-    return warp::http::StatusCode::OK.into_response();
+    return json(&player_data).into_response();
 }
 
 fn update_player_in_lobby(
@@ -519,12 +518,15 @@ fn remove_player_from_lobby(
     }
 }
 
-fn parse_auth(hex_token: &String) -> Option<Token> {
+fn parse_auth(hex_token: &str) -> Option<Token> {
     Token::from_hex(hex_token).ok()
 }
 
 fn auth_player(auth: &Option<String>, lobby: &Lobby) -> Option<usize> {
-    auth.as_ref().and_then(parse_auth).and_then(|t| lobby.token_player.get(&t).cloned())
+    auth.as_ref()
+        .and_then(|val| val.strip_prefix("Bearer "))
+        .and_then(parse_auth)
+        .and_then(|t| lobby.token_player.get(&t).cloned())
 }
 
 fn add_proposal_to_lobby(
@@ -540,7 +542,7 @@ fn add_proposal_to_lobby(
     let proposal = {
         let lobby = match manager.lobbies.get_mut(&lobby_id) {
             None => return warp::http::StatusCode::NOT_FOUND.into_response(),
-            Some(lobby) => lobby
+            Some(lobby) => lobby,
         };
 
         let player_id = match auth_player(&authorization, &lobby) {
@@ -569,7 +571,7 @@ fn add_proposal_to_lobby(
 
     warp::reply::with_status(
         json(&proposal),
-        warp::http::StatusCode::OK
+        warp::http::StatusCode::OK,
     ).into_response()
 }
 
@@ -682,12 +684,17 @@ fn start_proposal(
     ).into_response();
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct AcceptParams {
+    status: AcceptedState,
+}
+
 fn set_player_accepted_state(
     lobby_id: String,
     proposal_id: String,
     mgr: Arc<Mutex<LobbyManager>>,
     authorization: Option<String>,
-    new_status: AcceptedState,
+    params: AcceptParams,
 ) -> Response {
     let mut manager = mgr.lock().unwrap();
     let lobby_id = lobby_id.to_lowercase();
@@ -718,11 +725,11 @@ fn set_player_accepted_state(
         
         for player in proposal.players.iter_mut() {
             if player.player_id == player_id {
-                player.status = new_status.clone();
+                player.status = params.status.clone();
             }
         }
 
-        match new_status {
+        match params.status {
             AcceptedState::Rejected => proposal.status = ProposalStatus::Denied,
             _ => (),
         };
