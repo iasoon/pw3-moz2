@@ -1,6 +1,7 @@
 #![feature(async_closure)]
 
-use mozaic_core::msg_stream::msg_stream;
+use chrono::{DateTime, Utc};
+use mozaic_core::{msg_stream::msg_stream};
 use serde::{Deserialize, Serialize};
 
 use mozaic_core::client_manager::ClientHandle;
@@ -25,10 +26,11 @@ use std::collections::HashMap;
 use hex::FromHex;
 use rand::Rng;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 struct Player {
+    /// Scoped in lobby
+    id: usize,
     name: String,
-    #[serde(with = "hex")]
     token: Token,
 }
 
@@ -53,7 +55,15 @@ impl Player {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+struct PlayerParams {
+    name: String,
+    #[serde(with = "hex")]
+    token: Token,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 struct StrippedPlayer {
+    id: usize,
     name: String,
 }
 
@@ -100,7 +110,12 @@ struct Lobby {
     id: String,
     name: String,
     public: bool,
-    players: HashMap<String,Player>,
+
+    next_player_id: usize,
+    // TODO: don't use strings for tokens
+    token_player: HashMap<Token, usize>,
+    players: HashMap<usize, Player>,
+
     proposals: HashMap<String, Proposal>,
     matches: HashMap<String, MatchMeta>,
     // #[serde(with = "hex")]
@@ -112,7 +127,7 @@ struct StrippedLobby {
     id: String,
     name: String,
     public: bool,
-    players: HashMap<String,StrippedPlayer>,
+    players: HashMap<usize,StrippedPlayer>,
     proposals: HashMap<String, Proposal>,
     matches: HashMap<String, MatchMeta>,
 }
@@ -135,7 +150,11 @@ impl From<LobbyConfig> for Lobby {
             id: hex::encode(id),
             name: config.name,
             public: config.public,
+
+            next_player_id: 0,
             players: HashMap::new(),
+            token_player: HashMap::new(),
+
             lobby_token: rand::thread_rng().gen(),
             proposals: HashMap::new(),
             matches: HashMap::new(),
@@ -159,6 +178,7 @@ impl From<Lobby> for StrippedLobby {
 impl From<Player> for StrippedPlayer {
     fn from(player: Player) -> StrippedPlayer {
         StrippedPlayer {
+            id: player.id,
             name: player.name,
         }
     }
@@ -222,6 +242,7 @@ impl LobbyManager {
 }
 
 struct WsConnection {
+    #[warn(dead_code)]
     conn_id: usize,
     tx: mpsc::UnboundedSender<String>,
 }
@@ -232,6 +253,28 @@ impl WsConnection {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct ProposalParams {
+    config: planetwars::Config,
+    players: Vec<usize>
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Proposal {
+    id: String,
+    owner_id: usize,
+    config: planetwars::Config,
+    players: Vec<ProposalPlayer>,
+    #[serde(flatten)]
+    status: ProposalStatus,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct ProposalPlayer {
+    player_id: usize,
+    status: AcceptedState,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 enum AcceptedState {
     Unanswered,
@@ -239,28 +282,6 @@ enum AcceptedState {
     Rejected,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct AcceptingPlayer {
-    name: String,
-    status: AcceptedState,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct ProposalParams {
-    owner: String,
-    config: planetwars::Config,
-    players: Vec<String>
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct Proposal {
-    id: String,
-    owner: String,
-    config: planetwars::Config,
-    players: Vec<AcceptingPlayer>,
-    #[serde(flatten)]
-    status: ProposalStatus,
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all="camelCase")]
@@ -269,23 +290,6 @@ enum ProposalStatus {
     Pending,
     Denied,
     Accepted { match_id: String },
-}
-
-impl From<ProposalParams> for Proposal {
-    fn from(params: ProposalParams) -> Proposal {
-        Proposal {
-            owner: params.owner,
-            config: params.config,
-            players: params.players.iter().map(|name| {
-                AcceptingPlayer {
-                    name: name.to_string(),
-                    status: AcceptedState::Unanswered
-                }
-            }).collect(),
-            id: Uuid::new_v4().to_hyphenated().to_string(),
-            status: ProposalStatus::Pending,
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
@@ -298,6 +302,10 @@ enum MatchStatus {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct MatchMeta {
     id: String,
+    timestamp: DateTime<Utc>,
+    config: planetwars::Config,
+    // TODO: this should maybe be a hashmap for the more general case
+    players: Vec<usize>,
     status: MatchStatus,
 }
 
@@ -427,23 +435,33 @@ fn delete_lobby_by_id(
 fn add_player_to_lobby(
     id: String,
     mgr: Arc<Mutex<LobbyManager>>,
-    player: Player,
+    player_params: PlayerParams,
 ) -> Response {
     let mut manager = mgr.lock().unwrap();
     // TODO: translate this in a filter maybe?
     let lobby_id = id.to_lowercase();
 
+    // TODO: check for uniqueness of name and token
 
-    match manager.lobbies.get_mut(&lobby_id) {
+    let player_data = match manager.lobbies.get_mut(&lobby_id) {
         None => return warp::http::StatusCode::NOT_FOUND.into_response(),
         Some(lobby) => {
-            // TODO: we should check whether the name is available
-            lobby.players.insert(player.name.clone(), player.clone());
+            let player_id = lobby.next_player_id;
+            lobby.next_player_id += 1;
+            let player = Player {
+                id: player_id,
+                name: player_params.name,
+                // TODO: verify token
+                token: player_params.token,
+            };
+            lobby.token_player.insert(player.token.clone(), player_id);
+            lobby.players.insert(player_id, player.clone());
+            StrippedPlayer::from(player)
         },
-    }
+    };
 
     // update other clients
-    manager.send_update(&lobby_id, LobbyEvent::PlayerData(StrippedPlayer::from(player)));
+    manager.send_update(&lobby_id, LobbyEvent::PlayerData(player_data));
 
     // TODO: maybe return player?
     return warp::http::StatusCode::OK.into_response();
@@ -454,18 +472,41 @@ fn update_player_in_lobby(
     name: String,
     mgr: Arc<Mutex<LobbyManager>>,
     authorization: Option<String>,
-    player_update: StrippedPlayer,
+    player_params: PlayerParams,
 ) -> Response {
+    let mut manager = mgr.lock().unwrap();
+    let lobby_id = id.to_lowercase();
+    let player = {
+        let lobby = match manager.lobbies.get_mut(&id.to_lowercase()) {
+            None => return warp::http::StatusCode::NOT_FOUND.into_response(),
+            Some(lobby) => lobby,
+        };
+        let player_id = match lobby.token_player.get(&player_params.token) {
+            None => return warp::http::StatusCode::NOT_FOUND.into_response(),
+            Some(id) => id,
+        };
+        let player = lobby.players.get_mut(&player_id).unwrap();
+        player.name = player_params.name;
+        StrippedPlayer::from(player.clone())
+    };
+    manager.send_update(&lobby_id, LobbyEvent::PlayerData(player.clone()));
+    json(&player).into_response()
+}
+
+fn remove_player_from_lobby(
+    id: String,
+    player_id: usize,
+    mgr: Arc<Mutex<LobbyManager>>,
+    authorization: Option<String>,
+) -> Response {
+    // TODO: this method is defunct
     let mut manager = mgr.lock().unwrap();
     match manager.lobbies.get_mut(&id.to_lowercase()) {
         Some(lobby) => {
-            match lobby.players.get(&name) {
+            match lobby.players.get(&player_id) {
                 Some(player) => {
-                    if player.authorize_header(&authorization) {
-                        let mut new_player = player.clone();
-                        new_player.name = player_update.name;
-                        lobby.players.remove(&name);
-                        lobby.players.insert(new_player.name.clone(), new_player);
+                    if player.authorize_header(&authorization) || lobby.authorize_header(&authorization){
+                        lobby.players.remove(&player_id);
                         warp::http::StatusCode::OK.into_response()
                     } else {
                         warp::http::StatusCode::UNAUTHORIZED.into_response()
@@ -478,29 +519,12 @@ fn update_player_in_lobby(
     }
 }
 
-fn remove_player_from_lobby(
-    id: String,
-    name: String,
-    mgr: Arc<Mutex<LobbyManager>>,
-    authorization: Option<String>,
-) -> Response {
-    let mut manager = mgr.lock().unwrap();
-    match manager.lobbies.get_mut(&id.to_lowercase()) {
-        Some(lobby) => {
-            match lobby.players.get(&name) {
-                Some(player) => {
-                    if player.authorize_header(&authorization) || lobby.authorize_header(&authorization){
-                        lobby.players.remove(&name);
-                        warp::http::StatusCode::OK.into_response()
-                    } else {
-                        warp::http::StatusCode::UNAUTHORIZED.into_response()
-                    }
-                }
-                None => warp::http::StatusCode::NOT_FOUND.into_response()
-            }
-        },
-        None => warp::http::StatusCode::NOT_FOUND.into_response()
-    }
+fn parse_auth(hex_token: &String) -> Option<Token> {
+    Token::from_hex(hex_token).ok()
+}
+
+fn auth_player(auth: &Option<String>, lobby: &Lobby) -> Option<usize> {
+    auth.as_ref().and_then(parse_auth).and_then(|t| lobby.token_player.get(&t).cloned())
 }
 
 fn add_proposal_to_lobby(
@@ -512,19 +536,31 @@ fn add_proposal_to_lobby(
     let mut manager = mgr.lock().unwrap();
     let lobby_id = lobby_id.to_lowercase();
 
+
     let proposal = {
         let lobby = match manager.lobbies.get_mut(&lobby_id) {
             None => return warp::http::StatusCode::NOT_FOUND.into_response(),
             Some(lobby) => lobby
         };
-    
-        let _owner = match lobby.players.get(&params.owner) {
-            None => return warp::http::StatusCode::NOT_FOUND.into_response(),
-            Some(player) if player.authorize_header(&authorization) => player,
-            Some(_player) => return warp::http::StatusCode::UNAUTHORIZED.into_response(),
+
+        let player_id = match auth_player(&authorization, &lobby) {
+            Some(id) => id,
+            None => return warp::http::StatusCode::UNAUTHORIZED.into_response(),
         };
 
-        let proposal: Proposal = params.into();
+        let proposal = Proposal {
+            owner_id: player_id,
+            config: params.config,
+            players: params.players.iter().map(|&player_id| {
+                ProposalPlayer {
+                    player_id,
+                    status: AcceptedState::Unanswered
+                }
+            }).collect(),
+            id: Uuid::new_v4().to_hyphenated().to_string(),
+            status: ProposalStatus::Pending,
+        };
+
         lobby.proposals.insert(proposal.id.clone(), proposal.clone());
         proposal  
     };
@@ -535,8 +571,6 @@ fn add_proposal_to_lobby(
         json(&proposal),
         warp::http::StatusCode::OK
     ).into_response()
-        
-
 }
 
 fn start_proposal(
@@ -561,6 +595,11 @@ fn start_proposal(
             }
             Some(lobby) => lobby,
         };
+        let player_id = match auth_player(&authorization, &lobby) {
+            Some(id) => id,
+            None => return warp::http::StatusCode::UNAUTHORIZED.into_response(),
+        };
+    
         let proposal = match lobby.proposals.get_mut(&proposal_id) {
             None => {
                 return warp::reply::with_status(
@@ -579,29 +618,18 @@ fn start_proposal(
             }
         };
 
-        // authorize
-        match lobby.players.get(&proposal.owner) {
-            None => {
-                return warp::reply::with_status(
-                    format!("Proposal owner {} not found", proposal.owner),
-                    warp::http::StatusCode::NOT_FOUND
-                ).into_response()
-            },
-            Some(player) => {
-                if !player.authorize_header(&authorization) {
-                    return warp::http::StatusCode::UNAUTHORIZED.into_response();
-                }
-            }
+        if player_id != proposal.owner_id {
+            return warp::http::StatusCode::UNAUTHORIZED.into_response();
         }
 
         let mut tokens = vec![];
 
         for accepting_player in proposal.players.iter() {
-            let player_opt = lobby.players.get(&accepting_player.name);
+            let player_opt = lobby.players.get(&accepting_player.player_id);
             // I think this should never happen?
             if player_opt.is_none() {
                 return warp::reply::with_status(
-                    format!("Player {} does not exist in this lobby", accepting_player.name),
+                    format!("Player {} does not exist in this lobby", accepting_player.player_id),
                     warp::http::StatusCode::BAD_REQUEST
                 ).into_response();
             }
@@ -621,19 +649,24 @@ fn start_proposal(
         let cb_lobby_id = lobby_id.clone();
         let match_id = game_manager.create_match(tokens, match_config.clone(), move |match_id| {
             println!("completed match {}", &match_id);
-            let match_meta = MatchMeta {
-                id: match_id.clone(),
-                status: MatchStatus::Done,
-            };
             let mut mgr = cb_mgr.lock().unwrap();
-            mgr.lobbies.get_mut(&cb_lobby_id).map(|lobby| {
-                lobby.matches.insert(match_id.clone(), match_meta.clone());
+            mgr.lobbies.get_mut(&cb_lobby_id).and_then(|lobby| {
+                if let Some(match_meta) = lobby.matches.get_mut(&match_id) {
+                    match_meta.status = MatchStatus::Done;
+                    Some(match_meta.clone())
+                } else {
+                    None
+                }
+            }).map(|match_meta| {
+                mgr.send_update(&cb_lobby_id, LobbyEvent::MatchData(match_meta));
             });
-            mgr.send_update(&cb_lobby_id, LobbyEvent::MatchData(match_meta));
         });
         let match_meta = MatchMeta {
             id: match_id.clone(),
+            timestamp: Utc::now(),
             status: MatchStatus::Playing,
+            config: proposal.config.clone(),
+            players: proposal.players.iter().map(|p| p.player_id.clone()).collect(),
         };
         lobby.matches.insert(match_meta.id.clone(), match_meta.clone());
         proposal.status = ProposalStatus::Accepted { match_id };
@@ -654,7 +687,7 @@ fn set_player_accepted_state(
     proposal_id: String,
     mgr: Arc<Mutex<LobbyManager>>,
     authorization: Option<String>,
-    new_status: AcceptingPlayer,
+    new_status: AcceptedState,
 ) -> Response {
     let mut manager = mgr.lock().unwrap();
     let lobby_id = lobby_id.to_lowercase();
@@ -670,36 +703,26 @@ fn set_player_accepted_state(
             Some(lobby) => lobby,
         };
 
+        let player_id = match auth_player(&authorization, &lobby) {
+            Some(id) => id,
+            None => return warp::http::StatusCode::UNAUTHORIZED.into_response(),
+        };        
+
         let proposal = match lobby.proposals.get_mut(&proposal_id) {
             Some(proposal) => proposal,
-            None => return                     warp::reply::with_status(
+            None => return warp::reply::with_status(
                 format!("Proposal {} not found", proposal_id),
                 warp::http::StatusCode::NOT_FOUND
             ).into_response()
         };
-
-        // authorize
-        match lobby.players.get(&new_status.name) {
-            None => {
-                return warp::reply::with_status(
-                    format!("player {} not found", new_status.name),
-                    warp::http::StatusCode::NOT_FOUND
-                ).into_response()
-            },
-            Some(player) => {
-                if !player.authorize_header(&authorization) {
-                    return warp::http::StatusCode::UNAUTHORIZED.into_response();
-                }
-            }
-        };
         
         for player in proposal.players.iter_mut() {
-            if player.name == new_status.name {
-                player.status = new_status.status.clone();
+            if player.player_id == player_id {
+                player.status = new_status.clone();
             }
         }
 
-        match new_status.status {
+        match new_status {
             AcceptedState::Rejected => proposal.status = ProposalStatus::Denied,
             _ => (),
         };
@@ -890,7 +913,7 @@ async fn main() {
         .map(update_player_in_lobby);
 
     // DELETE /lobbies/<id>/players
-    let delete_lobbies_id_players_route = warp::path!("lobbies" / String / "players" / String)
+    let delete_lobbies_id_players_route = warp::path!("lobbies" / String / "players" / usize)
         .and(warp::path::end())
         .and(warp::delete())
         .and(with_lobby_manager(lobby_manager.clone()))
