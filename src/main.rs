@@ -14,14 +14,14 @@ use mozaic_core::msg_stream::{MsgStreamHandle};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use std::{convert::Infallible};
+use std::convert::Infallible;
 use warp::{reply::{json,Reply,Response}, ws::WebSocket};
 use warp::Filter;
 
 
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hex::FromHex;
 use rand::Rng;
@@ -33,6 +33,7 @@ struct Player {
     name: String,
     token: Token,
     connection_count: usize,
+    client_connected: bool,
 }
 
 impl Player {
@@ -67,6 +68,7 @@ struct StrippedPlayer {
     id: usize,
     name: String,
     connected: bool,
+    client_connected: bool,
 }
 
 struct GameManager {
@@ -183,6 +185,7 @@ impl From<Player> for StrippedPlayer {
             id: player.id,
             name: player.name,
             connected: player.connection_count > 0,
+            client_connected: player.client_connected,
         }
     }
 }
@@ -211,6 +214,8 @@ struct LobbyManager {
     game_manager: Arc<Mutex<GameManager>>,
     lobbies: HashMap<String, Lobby>,
     websocket_connections: HashMap<String, Vec<WsConnection>>,
+    /// token -> {(lobby_id, player_id)}
+    token_player: HashMap<Token, HashSet<(String, usize)>>,
 }
 
 impl LobbyManager {
@@ -219,6 +224,7 @@ impl LobbyManager {
             game_manager,
             lobbies: HashMap::new(),
             websocket_connections: HashMap::new(),
+            token_player: HashMap::new(),
         }
     }
 
@@ -242,6 +248,38 @@ impl LobbyManager {
             }
         }
     }
+}
+
+fn set_client_connected(lobby_mgr: &Arc<Mutex<LobbyManager>>, token: &Token, value: bool) {
+    let mut mgr = lobby_mgr.lock().unwrap();
+    let token_players = match mgr.token_player.get(token) {
+        None => return,
+        Some(players) => players.clone(),
+    };
+    for (lobby_id, player_id) in token_players {
+        let updated = mgr.lobbies.get_mut(&lobby_id).and_then(|lobby| {
+            lobby.players.get_mut(&player_id).map(|player| {
+                player.client_connected = value;
+                StrippedPlayer::from(player.clone())
+            })
+        });
+        if let Some(player_data) = updated {
+            mgr.send_update(&lobby_id, LobbyEvent::PlayerData(player_data))
+        }
+    }
+}
+
+fn init_callbacks(mgr_ref: Arc<Mutex<LobbyManager>>) {
+    let mgr = mgr_ref.lock().unwrap();
+    let mut game_mgr = mgr.game_manager.lock().unwrap();
+    let client_mgr = game_mgr.game_server.client_manager_mut();
+    
+    let cloned_ref = mgr_ref.clone();
+    client_mgr.on_connect(Box::new(move |token|
+        set_client_connected(&cloned_ref, token, true)));
+    let cloned_ref = mgr_ref.clone();
+    client_mgr.on_disconnect(Box::new(move |token|
+        set_client_connected(&cloned_ref, token, false)));
 }
 
 struct WsConnection {
@@ -443,6 +481,7 @@ fn add_player_to_lobby(
     let mut manager = mgr.lock().unwrap();
     // TODO: translate this in a filter maybe?
     let lobby_id = id.to_lowercase();
+    let game_mgr = manager.game_manager.clone();
 
     // TODO: check for uniqueness of name and token
 
@@ -463,11 +502,23 @@ fn add_player_to_lobby(
             token: player_params.token,
             // TODO?
             connection_count: 0,
+            client_connected: game_mgr
+                .lock()
+                .unwrap()
+                .game_server
+                .client_manager()
+                .is_connected(&player_params.token)
         };
         lobby.token_player.insert(player.token.clone(), player_id);
         lobby.players.insert(player_id, player.clone());
         StrippedPlayer::from(player)
     };
+
+    // register token to player
+    manager.token_player
+        .entry(player_params.token.clone())
+        .or_insert_with(|| HashSet::new())
+        .insert((lobby_id.clone(), player_data.id));
 
     // update other clients
     manager.send_update(&lobby_id, LobbyEvent::PlayerData(player_data.clone()));
@@ -917,6 +968,7 @@ async fn handle_websocket(
 #[tokio::main]
 async fn main() {
     let game_server = GameServer::new();
+
     // TODO: can we run these on the same port? Would that be desirable?
     tokio::spawn(game_server.run_ws_server("127.0.0.1:8080".to_string()));
 
@@ -924,7 +976,9 @@ async fn main() {
         game_server,
         matches: HashMap::new(),
     }));
+
     let lobby_manager = Arc::new(Mutex::new(LobbyManager::new(game_manager.clone())));
+    init_callbacks(lobby_manager.clone());
 
     // POST /lobbies
     let post_lobbies_route = warp::path("lobbies")
