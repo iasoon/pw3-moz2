@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use std::{convert::Infallible};
-use warp::{hyper::server::accept::Accept, reply::{json,Reply,Response}, ws::WebSocket};
+use warp::{reply::{json,Reply,Response}, ws::WebSocket};
 use warp::Filter;
 
 
@@ -32,6 +32,7 @@ struct Player {
     id: usize,
     name: String,
     token: Token,
+    connection_count: usize,
 }
 
 impl Player {
@@ -65,6 +66,7 @@ struct PlayerParams {
 struct StrippedPlayer {
     id: usize,
     name: String,
+    connected: bool,
 }
 
 struct GameManager {
@@ -180,6 +182,7 @@ impl From<Player> for StrippedPlayer {
         StrippedPlayer {
             id: player.id,
             name: player.name,
+            connected: player.connection_count > 0,
         }
     }
 }
@@ -243,7 +246,7 @@ impl LobbyManager {
 
 struct WsConnection {
     #[warn(dead_code)]
-    conn_id: usize,
+    _conn_id: usize,
     tx: mpsc::UnboundedSender<String>,
 }
 
@@ -443,21 +446,27 @@ fn add_player_to_lobby(
 
     // TODO: check for uniqueness of name and token
 
-    let player_data = match manager.lobbies.get_mut(&lobby_id) {
-        None => return warp::http::StatusCode::NOT_FOUND.into_response(),
-        Some(lobby) => {
-            let player_id = lobby.next_player_id;
+    let player_data = {
+        let lobby = match manager.lobbies.get_mut(&lobby_id) {
+            None => return warp::http::StatusCode::NOT_FOUND.into_response(),
+            Some(lobby) => lobby,
+        };
+
+        let player_id = lobby.token_player.get(&player_params.token).cloned().unwrap_or_else(|| {
+            let id = lobby.next_player_id;
             lobby.next_player_id += 1;
-            let player = Player {
-                id: player_id,
-                name: player_params.name,
-                // TODO: verify token
-                token: player_params.token,
-            };
-            lobby.token_player.insert(player.token.clone(), player_id);
-            lobby.players.insert(player_id, player.clone());
-            StrippedPlayer::from(player)
-        },
+            id   
+        });
+        let player = Player {
+            id: player_id,
+            name: player_params.name,
+            token: player_params.token,
+            // TODO?
+            connection_count: 0,
+        };
+        lobby.token_player.insert(player.token.clone(), player_id);
+        lobby.players.insert(player_id, player.clone());
+        StrippedPlayer::from(player)
     };
 
     // update other clients
@@ -468,9 +477,9 @@ fn add_player_to_lobby(
 
 fn update_player_in_lobby(
     id: String,
-    name: String,
+    _name: String,
     mgr: Arc<Mutex<LobbyManager>>,
-    authorization: Option<String>,
+    _authorization: Option<String>,
     player_params: PlayerParams,
 ) -> Response {
     let mut manager = mgr.lock().unwrap();
@@ -785,7 +794,8 @@ enum WsClientMessage {
 #[serde(rename_all="camelCase")]
 struct WsConnectRequest {
     lobby_id: String,
-    token: String,
+    #[serde(with = "hex")]
+    token: Token,
 }
 
 static NEXT_CONNECTION_ID: AtomicUsize = AtomicUsize::new(1);
@@ -808,12 +818,14 @@ async fn handle_websocket(
         }
     }));
 
+    let mut connection_players = Vec::new();
     while let Some(res) = ws_rx.next().await {
+
         let ws_msg = match res {
             Ok(ws_msg) => ws_msg,
             Err(e) => {
                 eprintln!("websocket error(uid={}): {}", conn_id, e);
-                return;
+                break;
             }
         };
 
@@ -832,21 +844,72 @@ async fn handle_websocket(
         match client_msg {
             WsClientMessage::Connect(req) => {
                 let mut lobby_mgr = mgr.lock().unwrap();
+                let (lobby_data, player_data) = {
+                    let lobby = match lobby_mgr.lobbies.get_mut(&req.lobby_id) {
+                        None => continue,
+                        Some(lobby) => lobby,
+                    };
+    
+                    let player_data = match lobby.token_player.get(&req.token) {
+                        None => continue,
+                        Some(&player_id) => {
+                            connection_players.push((req.lobby_id.clone(), player_id));
+                            let player = lobby.players.get_mut(&player_id).unwrap();
+                            player.connection_count += 1;
 
-                lobby_mgr.lobbies.get(&req.lobby_id).map(|lobby| {
-                    let lobby_data = LobbyEvent::LobbyState(StrippedLobby::from(lobby.clone()));
-                    let resp = serde_json::to_string(&lobby_data).unwrap();
-                    tx.send(resp).unwrap();
-                }).map(|_| {
-                    lobby_mgr.websocket_connections
-                        .entry(req.lobby_id)
-                        .or_insert_with(|| Vec::new())
-                        .push(WsConnection {
-                            conn_id,
-                            tx: tx.clone(),
-                        });
-                });
+                            if player.connection_count == 1 {
+                                // update required
+                                Some(StrippedPlayer::from(player.clone()))
+                            } else {
+                                None
+                            }
+                        }
+                    };
+    
+    
+                    let lobby_data = StrippedLobby::from(lobby.clone());
+                    (lobby_data, player_data)
+                };
+
+                if let Some(data) = player_data {
+                    lobby_mgr.send_update(&req.lobby_id, LobbyEvent::PlayerData(data));
+                }
+
+                // update current state to prevent desync
+                let resp = serde_json::to_string(&LobbyEvent::LobbyState(lobby_data)).unwrap();
+                tx.send(resp).unwrap();
+
+                // add connection to connection pool
+                lobby_mgr.websocket_connections
+                    .entry(req.lobby_id)
+                    .or_insert_with(|| Vec::new())
+                    .push(WsConnection {
+                        _conn_id: conn_id,
+                        tx: tx.clone(),
+                    });
             }
+        }
+    }
+    // connection done, disconnect!
+    let mut lobby_mgr = mgr.lock().unwrap();
+    for (lobby_id, player_id) in connection_players.into_iter() {
+        let update = match lobby_mgr.lobbies.get_mut(&lobby_id) {
+            None => continue,
+            Some(lobby) => {
+                lobby.players.get_mut(&player_id).and_then(|player| {
+                    player.connection_count -= 1;
+                    if player.connection_count == 0 {
+                        // update required
+                        Some(StrippedPlayer::from(player.clone()))
+                    } else {
+                        None
+                    }
+                })
+            }
+        };
+
+        if let Some(player_data) = update {
+            lobby_mgr.send_update(&lobby_id, LobbyEvent::PlayerData(player_data));
         }
     }
 }
