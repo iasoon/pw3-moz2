@@ -696,7 +696,7 @@ fn start_proposal(
                 ).into_response();
             }
             let player = player_opt.unwrap();
-            if accepting_player.status != AcceptedState::Accepted {
+            if accepting_player.status != AcceptedState::Accepted || !player.client_connected {
                 return warp::reply::with_status(
                     "Not all players are ready",
                     warp::http::StatusCode::BAD_REQUEST
