@@ -1,7 +1,7 @@
 #![feature(async_closure)]
 
 use chrono::{DateTime, Utc};
-use mozaic_core::{msg_stream::msg_stream};
+use mozaic_core::{EventBus, match_context::PlayerHandle, msg_stream::msg_stream};
 use serde::{Deserialize, Serialize};
 
 use mozaic_core::client_manager::ClientHandle;
@@ -363,17 +363,17 @@ enum LobbyEvent {
 
 async fn run_match(
     mut clients: Vec<ClientHandle>,
-    mut serv: GameServer,
+    serv: GameServer,
     config: planetwars::Config,
     log: MsgStreamHandle<String>)
 {
-    let event_bus = msg_stream();
+    let event_bus = Arc::new(Mutex::new(EventBus::new()));
     let players = stream::iter(clients.iter_mut().enumerate())
         .then(|(i, client)| {
             let player_token: Token = rand::thread_rng().gen();
             let player_id = (i+1) as u32;
-            let player = serv.register_player(player_id, player_token, &event_bus);
-            client.run_player(player_token).map(move |_| (player_id, player))
+            let player = serv.conn_table().open_connection(player_token, player_id, event_bus.clone());
+            client.run_player(player_token).map(move |_| (player_id, Box::new(player) as Box<dyn PlayerHandle>))
         }).collect().await;
     
     let match_ctx = MatchCtx::new(event_bus, players, log);

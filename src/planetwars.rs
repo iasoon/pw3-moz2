@@ -34,7 +34,9 @@ impl PwMatch {
             let player_messages = self.prompt_players().await;
 
             for (player_id, turn) in player_messages {
-                self.execute_action(player_id, turn);
+                let res = self.execute_action(player_id, turn);
+                let info_str = serde_json::to_string(&res).unwrap();
+                self.match_ctx.send_info(player_id as u32, info_str);
             }
             self.match_state.step();
 

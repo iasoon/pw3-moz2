@@ -26,7 +26,7 @@ serde_bytes = "0.11"
 hex = { version = "0.4", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
-mozaic-core = { git = "https://github.com/iasoon/MOZAIC2", rev="451820c" }
+mozaic-core = { git = "https://github.com/iasoon/MOZAIC2", rev="ef0cd21" }
 
 rand = "0.7.3"
 planetwars-rules = { path = "./planetwars-rules" }
