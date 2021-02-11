@@ -9,7 +9,7 @@ use std::convert::TryInto;
 
 pub use planetwars_rules::config::{Config, Map};
 
-use planetwars_rules::protocol as proto;
+use planetwars_rules::protocol::{self as proto, PlayerAction};
 use planetwars_rules::serializer as pw_serializer;
 use planetwars_rules::{PlanetWars, PwConfig};
 
@@ -35,8 +35,10 @@ impl PwMatch {
 
             for (player_id, turn) in player_messages {
                 let res = self.execute_action(player_id, turn);
-                let info_str = serde_json::to_string(&res).unwrap();
-                self.match_ctx.send_info(player_id as u32, info_str);
+                if let Some(err) = action_errors(res) {
+                    let info_str = serde_json::to_string(&err).unwrap();
+                    self.match_ctx.send_info(player_id as u32, info_str);    
+                }
             }
             self.match_state.step();
 
@@ -107,5 +109,22 @@ impl PwMatch {
 
         return proto::PlayerAction::Commands(commands);
     }
+}
 
+fn action_errors(action: PlayerAction) -> Option<PlayerAction> {
+    match action {
+        PlayerAction::Commands(commands) => {
+            let failed = commands
+                .into_iter()
+                .filter(|cmd| cmd.error.is_some())
+                .collect::<Vec<_>>();
+
+            if failed.is_empty() {
+                None
+            } else {
+                Some(PlayerAction::Commands(failed))
+            }
+        }
+        e => Some(e),
+    }
 }
