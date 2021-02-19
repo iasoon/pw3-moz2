@@ -22,6 +22,7 @@ use warp::Filter;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::{HashMap, HashSet};
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use hex::FromHex;
 use rand::Rng;
@@ -860,7 +861,8 @@ async fn handle_websocket(
     let (tx, rx) = mpsc::unbounded_channel();
     let (ws_tx, mut ws_rx) = ws.split();
 
-    let messages = rx.map(|text| {
+
+    let messages = UnboundedReceiverStream::new(rx).map(|text| {
         Ok(warp::ws::Message::text(text))
     });
     tokio::task::spawn(messages.forward(ws_tx).map(|res| {
