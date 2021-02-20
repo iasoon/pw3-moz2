@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use std::convert::Infallible;
-use warp::{reply::{json,Reply,Response}, ws::WebSocket};
+use warp::{Rejection, reply::{json,Reply,Response}, ws::WebSocket};
 use warp::Filter;
 
 
@@ -967,6 +967,43 @@ async fn handle_websocket(
     }
 }
 
+
+struct LobbyRequestCtx {
+    lobby_mgr: Arc<Mutex<LobbyManager>>,
+    lobby_id: String,
+    auth_header: Option<String>,
+}
+
+fn lobby_context(lobby_mgr: Arc<Mutex<LobbyManager>>)
+    -> impl Filter<Extract=(LobbyRequestCtx, ), Error=Rejection> + Clone
+{
+    warp::path("lobbies")
+        .and(with_lobby_manager(lobby_mgr))
+        .and(warp::path::param::<String>())
+        .and(warp::header::optional("authorization"))
+        .map(|lobby_mgr, lobby_id, auth_header|
+            LobbyRequestCtx {
+                lobby_mgr,
+                lobby_id,
+                auth_header: auth_header,
+            }
+        )
+}
+
+impl LobbyRequestCtx {
+    fn get_lobby(self) -> Response {
+        let mgr = self.lobby_mgr.lock().unwrap();
+        match mgr.lobbies.get(&self.lobby_id.to_lowercase()) {
+            Some(lobby) => {
+                json(&StrippedLobby::from(lobby.clone())).into_response()
+            },
+            None => warp::http::StatusCode::NOT_FOUND.into_response()
+        }
+    
+    }
+}
+
+
 #[tokio::main]
 async fn main() {
     let game_server = GameServer::new();
@@ -997,15 +1034,19 @@ async fn main() {
         .and(with_lobby_manager(lobby_manager.clone()))
         .map(get_lobbies);
 
+    let lobby_scope = warp::path("lobbies")
+        .and(warp::filters::path::param::<String>());
+
     // GET /lobbies/<id>
-    let get_lobbies_id_route = warp::path!("lobbies" / String)
+    let get_lobbies_id_route =
+        lobby_context(lobby_manager.clone())
         .and(warp::path::end())
         .and(warp::get())
-        .and(with_lobby_manager(lobby_manager.clone()))
-        .map(get_lobby_by_id);
+        .map(LobbyRequestCtx::get_lobby);
 
     // PUT /lobbies/<id>
-    let put_lobbies_id_route = warp::path!("lobbies" / String)
+    let put_lobbies_id_route = 
+        lobby_scope
         .and(warp::path::end())
         .and(warp::put())
         .and(with_lobby_manager(lobby_manager.clone()))
