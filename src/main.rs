@@ -419,18 +419,6 @@ fn get_lobbies(
     }).collect::<Vec<StrippedLobby>>());
 }
 
-fn get_lobby_by_id(
-    id: String,
-    mgr: Arc<Mutex<LobbyManager>>,
-) -> Response {
-    let manager = mgr.lock().unwrap();
-    match manager.lobbies.get(&id.to_lowercase()) {
-        Some(lobby) => {
-            json(&StrippedLobby::from(lobby.clone())).into_response()
-        },
-        None => warp::http::StatusCode::NOT_FOUND.into_response()
-    }
-}
 
 fn update_lobby_by_id(
     id: String,
@@ -974,34 +962,35 @@ struct LobbyRequestCtx {
     auth_header: Option<String>,
 }
 
-fn lobby_context(lobby_mgr: Arc<Mutex<LobbyManager>>)
+fn lobby_context<MountPoint>(
+    base: MountPoint,
+    lobby_mgr: Arc<Mutex<LobbyManager>>)
     -> impl Filter<Extract=(LobbyRequestCtx, ), Error=Rejection> + Clone
+    where MountPoint: Filter<Extract=(String, ), Error=Rejection> + Clone
 {
-    warp::path("lobbies")
+    base
         .and(with_lobby_manager(lobby_mgr))
-        .and(warp::path::param::<String>())
         .and(warp::header::optional("authorization"))
-        .map(|lobby_mgr, lobby_id, auth_header|
+        .map(|lobby_id, lobby_mgr, auth_header|
             LobbyRequestCtx {
                 lobby_mgr,
                 lobby_id,
-                auth_header: auth_header,
+                auth_header,
             }
         )
 }
 
-impl LobbyRequestCtx {
-    fn get_lobby(self) -> Response {
-        let mgr = self.lobby_mgr.lock().unwrap();
-        match mgr.lobbies.get(&self.lobby_id.to_lowercase()) {
-            Some(lobby) => {
-                json(&StrippedLobby::from(lobby.clone())).into_response()
-            },
-            None => warp::http::StatusCode::NOT_FOUND.into_response()
-        }
-    
+fn get_lobby_by_id(req: LobbyRequestCtx) -> Response {
+    let mgr = req.lobby_mgr.lock().unwrap();
+    match mgr.lobbies.get(&req.lobby_id.to_lowercase()) {
+        Some(lobby) => {
+            json(&StrippedLobby::from(lobby.clone())).into_response()
+        },
+        None => warp::http::StatusCode::NOT_FOUND.into_response()
     }
+
 }
+
 
 
 #[tokio::main]
@@ -1034,19 +1023,21 @@ async fn main() {
         .and(with_lobby_manager(lobby_manager.clone()))
         .map(get_lobbies);
 
-    let lobby_scope = warp::path("lobbies")
-        .and(warp::filters::path::param::<String>());
+    let lobby_scope = lobby_context(
+        warp::path!("lobbies" / String / .. ),
+        lobby_manager.clone(),
+    );
 
     // GET /lobbies/<id>
     let get_lobbies_id_route =
-        lobby_context(lobby_manager.clone())
+        lobby_scope
         .and(warp::path::end())
         .and(warp::get())
-        .map(LobbyRequestCtx::get_lobby);
+        .map(get_lobby_by_id);
 
     // PUT /lobbies/<id>
     let put_lobbies_id_route = 
-        lobby_scope
+        warp::path!("lobbies" / String)
         .and(warp::path::end())
         .and(warp::put())
         .and(with_lobby_manager(lobby_manager.clone()))
