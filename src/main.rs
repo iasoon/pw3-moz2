@@ -14,12 +14,11 @@ use mozaic_core::msg_stream::{MsgStreamHandle};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use std::convert::Infallible;
 use warp::{Rejection, reply::{json,Reply,Response}, ws::WebSocket};
 use warp::Filter;
 
 
-use std::sync::{Arc, Mutex};
+use std::{convert::Infallible, sync::{Arc, Mutex}};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::{HashMap, HashSet};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -35,26 +34,6 @@ struct Player {
     token: Token,
     connection_count: usize,
     client_connected: bool,
-}
-
-impl Player {
-    pub fn authorize_header(&self, authorization: &Option<String>) -> bool {
-        if authorization.is_none() {
-            false
-        } else {
-            let bearer_token = authorization.as_ref().unwrap().to_lowercase();
-            let token_string = bearer_token.strip_prefix("bearer ");
-            if token_string.is_none() {
-                return false;
-            }
-            let token_opt = Token::from_hex(token_string.unwrap());
-            if token_opt.is_err() || token_opt.unwrap() != self.token {
-                false
-            } else {
-                true
-            }
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -191,26 +170,6 @@ impl From<Player> for StrippedPlayer {
     }
 }
 
-impl Lobby {
-    pub fn authorize_header(&self, authorization: &Option<String>) -> bool {
-        if authorization.is_none() {
-            false
-        } else {
-            let bearer_token = authorization.as_ref().unwrap().to_lowercase();
-            let token_string = bearer_token.strip_prefix("bearer ");
-            if token_string.is_none() {
-                return false;
-            }
-            let token_opt = Token::from_hex(token_string.unwrap());
-            if token_opt.is_err() || token_opt.unwrap() != self.lobby_token {
-                false
-            } else {
-                true
-            }
-        }
-    }
-}
-
 struct LobbyManager {
     game_manager: Arc<Mutex<GameManager>>,
     lobbies: HashMap<String, Lobby>,
@@ -325,7 +284,7 @@ enum AcceptedState {
 }
 
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all="camelCase")]
 #[serde(tag="status")]
 enum ProposalStatus {
@@ -406,392 +365,11 @@ fn create_lobby(
     json(&StrippedLobby::from(lobby.clone()))
 }
 
-fn get_lobbies(
-    mgr: Arc<Mutex<LobbyManager>>,
-) -> impl Reply {
-    let manager = mgr.lock().unwrap();
-    return json(&manager.lobbies.values().filter_map(|lobby| {
-        if lobby.public {
-            Some((*lobby).clone().into())
-        } else {
-            None
-        }
-    }).collect::<Vec<StrippedLobby>>());
-}
 
-
-fn update_lobby_by_id(
-    id: String,
-    mgr: Arc<Mutex<LobbyManager>>,
-    authorization: Option<String>,
-    lobby_conf: LobbyConfig,
-) -> Response {
-    let mut manager = mgr.lock().unwrap();
-    match manager.lobbies.get(&id.to_lowercase()) {
-        Some(lobby) => {
-            if lobby.authorize_header(&authorization) {
-                let mut new_lobby = lobby.clone();
-                new_lobby.name = lobby_conf.name;
-                new_lobby.public = lobby_conf.public;
-                manager.lobbies.insert(new_lobby.id.to_lowercase(), new_lobby);
-                return warp::http::StatusCode::OK.into_response();
-            } else {
-                return warp::http::StatusCode::UNAUTHORIZED.into_response();
-            }
-        },
-        None => warp::http::StatusCode::NOT_FOUND.into_response()
-    }
-}
-
-fn delete_lobby_by_id(
-    id: String,
-    mgr: Arc<Mutex<LobbyManager>>,
-    authorization: Option<String>,
-) -> Response {
-    let mut manager = mgr.lock().unwrap();
-    match manager.lobbies.get(&id.to_lowercase()) {
-        Some(lobby) => {
-            if lobby.authorize_header(&authorization) {
-                manager.lobbies.remove(&id);
-                return warp::http::StatusCode::OK.into_response();
-            } else {
-                return warp::http::StatusCode::UNAUTHORIZED.into_response();
-            }
-        },
-        None => warp::http::StatusCode::NOT_FOUND.into_response()
-    }
-}
-
-fn add_player_to_lobby(
-    id: String,
-    mgr: Arc<Mutex<LobbyManager>>,
-    player_params: PlayerParams,
-) -> Response {
-    let mut manager = mgr.lock().unwrap();
-    // TODO: translate this in a filter maybe?
-    let lobby_id = id.to_lowercase();
-    let game_mgr = manager.game_manager.clone();
-
-    // TODO: check for uniqueness of name and token
-
-    let player_data = {
-        let lobby = match manager.lobbies.get_mut(&lobby_id) {
-            None => return warp::http::StatusCode::NOT_FOUND.into_response(),
-            Some(lobby) => lobby,
-        };
-
-        let player_id = lobby.token_player.get(&player_params.token).cloned().unwrap_or_else(|| {
-            let id = lobby.next_player_id;
-            lobby.next_player_id += 1;
-            id   
-        });
-        let player = Player {
-            id: player_id,
-            name: player_params.name,
-            token: player_params.token,
-            // TODO?
-            connection_count: 0,
-            client_connected: game_mgr
-                .lock()
-                .unwrap()
-                .game_server
-                .client_manager()
-                .is_connected(&player_params.token)
-        };
-        lobby.token_player.insert(player.token.clone(), player_id);
-        lobby.players.insert(player_id, player.clone());
-        StrippedPlayer::from(player)
-    };
-
-    // register token to player
-    manager.token_player
-        .entry(player_params.token.clone())
-        .or_insert_with(|| HashSet::new())
-        .insert((lobby_id.clone(), player_data.id));
-
-    // update other clients
-    manager.send_update(&lobby_id, LobbyEvent::PlayerData(player_data.clone()));
-
-    return json(&player_data).into_response();
-}
-
-fn update_player_in_lobby(
-    id: String,
-    _name: String,
-    mgr: Arc<Mutex<LobbyManager>>,
-    _authorization: Option<String>,
-    player_params: PlayerParams,
-) -> Response {
-    let mut manager = mgr.lock().unwrap();
-    let lobby_id = id.to_lowercase();
-    let player = {
-        let lobby = match manager.lobbies.get_mut(&id.to_lowercase()) {
-            None => return warp::http::StatusCode::NOT_FOUND.into_response(),
-            Some(lobby) => lobby,
-        };
-        let player_id = match lobby.token_player.get(&player_params.token) {
-            None => return warp::http::StatusCode::NOT_FOUND.into_response(),
-            Some(id) => id,
-        };
-        let player = lobby.players.get_mut(&player_id).unwrap();
-        player.name = player_params.name;
-        StrippedPlayer::from(player.clone())
-    };
-    manager.send_update(&lobby_id, LobbyEvent::PlayerData(player.clone()));
-    json(&player).into_response()
-}
-
-fn remove_player_from_lobby(
-    id: String,
-    player_id: usize,
-    mgr: Arc<Mutex<LobbyManager>>,
-    authorization: Option<String>,
-) -> Response {
-    // TODO: this method is defunct
-    let mut manager = mgr.lock().unwrap();
-    match manager.lobbies.get_mut(&id.to_lowercase()) {
-        Some(lobby) => {
-            match lobby.players.get(&player_id) {
-                Some(player) => {
-                    if player.authorize_header(&authorization) || lobby.authorize_header(&authorization){
-                        lobby.players.remove(&player_id);
-                        warp::http::StatusCode::OK.into_response()
-                    } else {
-                        warp::http::StatusCode::UNAUTHORIZED.into_response()
-                    }
-                }
-                None => warp::http::StatusCode::NOT_FOUND.into_response()
-            }
-        },
-        None => warp::http::StatusCode::NOT_FOUND.into_response()
-    }
-}
-
-fn parse_auth(hex_token: &str) -> Option<Token> {
-    Token::from_hex(hex_token).ok()
-}
-
-fn auth_player(auth: &Option<String>, lobby: &Lobby) -> Option<usize> {
-    auth.as_ref()
-        .and_then(|val| val.strip_prefix("Bearer "))
-        .and_then(parse_auth)
-        .and_then(|t| lobby.token_player.get(&t).cloned())
-}
-
-fn add_proposal_to_lobby(
-    lobby_id: String,
-    mgr: Arc<Mutex<LobbyManager>>,
-    authorization: Option<String>,
-    params: ProposalParams
-) -> Response {
-    let mut manager = mgr.lock().unwrap();
-    let lobby_id = lobby_id.to_lowercase();
-
-
-    let proposal = {
-        let lobby = match manager.lobbies.get_mut(&lobby_id) {
-            None => return warp::http::StatusCode::NOT_FOUND.into_response(),
-            Some(lobby) => lobby,
-        };
-
-        let player_id = match auth_player(&authorization, &lobby) {
-            Some(id) => id,
-            None => return warp::http::StatusCode::UNAUTHORIZED.into_response(),
-        };
-
-        let proposal = Proposal {
-            owner_id: player_id,
-            config: params.config,
-            players: params.players.iter().map(|&player_id| {
-                ProposalPlayer {
-                    player_id,
-                    status: AcceptedState::Unanswered
-                }
-            }).collect(),
-            id: Uuid::new_v4().to_hyphenated().to_string(),
-            status: ProposalStatus::Pending,
-        };
-
-        lobby.proposals.insert(proposal.id.clone(), proposal.clone());
-        proposal  
-    };
-
-    manager.send_update(&lobby_id, LobbyEvent::ProposalData(proposal.clone()));
-
-    warp::reply::with_status(
-        json(&proposal),
-        warp::http::StatusCode::OK,
-    ).into_response()
-}
-
-fn start_proposal(
-    lobby_id: String,
-    proposal_id: String,
-    mgr: Arc<Mutex<LobbyManager>>,
-    authorization: Option<String>,
-) -> Response {
-    let lobby_id = lobby_id.to_lowercase();
-    let mut manager = mgr.lock().unwrap();
-
-    let proposal = {
-        let game_mgr = manager.game_manager.clone();
-        let mut game_manager = game_mgr.lock().unwrap();
-
-        let lobby = match manager.lobbies.get_mut(&lobby_id) {
-            None => {
-                return warp::reply::with_status(
-                    format!("Lobby {} not found", lobby_id),
-                    warp::http::StatusCode::NOT_FOUND
-                ).into_response()
-            }
-            Some(lobby) => lobby,
-        };
-        let player_id = match auth_player(&authorization, &lobby) {
-            Some(id) => id,
-            None => return warp::http::StatusCode::UNAUTHORIZED.into_response(),
-        };
-    
-        let proposal = match lobby.proposals.get_mut(&proposal_id) {
-            None => {
-                return warp::reply::with_status(
-                    format!("Proposal {} not found", proposal_id),
-                    warp::http::StatusCode::NOT_FOUND
-                ).into_response()
-            }
-            Some(proposal) => {
-                match proposal.status {
-                    ProposalStatus::Pending => proposal,
-                    _ => return warp::reply::with_status(
-                        format!("Proposal {} is no longer valid", proposal_id),
-                        warp::http::StatusCode::BAD_REQUEST,
-                    ).into_response()
-                }
-            }
-        };
-
-        if player_id != proposal.owner_id {
-            return warp::http::StatusCode::UNAUTHORIZED.into_response();
-        }
-
-        let mut tokens = vec![];
-
-        for accepting_player in proposal.players.iter() {
-            let player_opt = lobby.players.get(&accepting_player.player_id);
-            // I think this should never happen?
-            if player_opt.is_none() {
-                return warp::reply::with_status(
-                    format!("Player {} does not exist in this lobby", accepting_player.player_id),
-                    warp::http::StatusCode::BAD_REQUEST
-                ).into_response();
-            }
-            let player = player_opt.unwrap();
-            if accepting_player.status != AcceptedState::Accepted || !player.client_connected {
-                return warp::reply::with_status(
-                    "Not all players are ready",
-                    warp::http::StatusCode::BAD_REQUEST
-                ).into_response();
-            }
-
-            tokens.push(player.token);
-        }
-        let match_config: planetwars::Config = proposal.config.clone();
-
-        let cb_mgr = mgr.clone();
-        let cb_lobby_id = lobby_id.clone();
-        let match_id = game_manager.create_match(tokens, match_config.clone(), move |match_id| {
-            println!("completed match {}", &match_id);
-            let mut mgr = cb_mgr.lock().unwrap();
-            mgr.lobbies.get_mut(&cb_lobby_id).and_then(|lobby| {
-                if let Some(match_meta) = lobby.matches.get_mut(&match_id) {
-                    match_meta.status = MatchStatus::Done;
-                    Some(match_meta.clone())
-                } else {
-                    None
-                }
-            }).map(|match_meta| {
-                mgr.send_update(&cb_lobby_id, LobbyEvent::MatchData(match_meta));
-            });
-        });
-        let match_meta = MatchMeta {
-            id: match_id.clone(),
-            timestamp: Utc::now(),
-            status: MatchStatus::Playing,
-            config: proposal.config.clone(),
-            players: proposal.players.iter().map(|p| p.player_id.clone()).collect(),
-        };
-        lobby.matches.insert(match_meta.id.clone(), match_meta.clone());
-        proposal.status = ProposalStatus::Accepted { match_id };
-        proposal.clone()
-    };
-
-
-    manager.send_update(&lobby_id, LobbyEvent::ProposalData(proposal.clone()));
-
-    return warp::reply::with_status(
-        json(&proposal),
-        warp::http::StatusCode::OK
-    ).into_response();
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct AcceptParams {
     status: AcceptedState,
-}
-
-fn set_player_accepted_state(
-    lobby_id: String,
-    proposal_id: String,
-    mgr: Arc<Mutex<LobbyManager>>,
-    authorization: Option<String>,
-    params: AcceptParams,
-) -> Response {
-    let mut manager = mgr.lock().unwrap();
-    let lobby_id = lobby_id.to_lowercase();
-
-    let proposal = {
-        let lobby = match manager.lobbies.get_mut(&lobby_id) {
-            None => {
-                return warp::reply::with_status(
-                    format!("Lobby {} not found", lobby_id),
-                    warp::http::StatusCode::NOT_FOUND
-                ).into_response()
-            }
-            Some(lobby) => lobby,
-        };
-
-        let player_id = match auth_player(&authorization, &lobby) {
-            Some(id) => id,
-            None => return warp::http::StatusCode::UNAUTHORIZED.into_response(),
-        };        
-
-        let proposal = match lobby.proposals.get_mut(&proposal_id) {
-            Some(proposal) => proposal,
-            None => return warp::reply::with_status(
-                format!("Proposal {} not found", proposal_id),
-                warp::http::StatusCode::NOT_FOUND
-            ).into_response()
-        };
-        
-        for player in proposal.players.iter_mut() {
-            if player.player_id == player_id {
-                player.status = params.status.clone();
-            }
-        }
-
-        match params.status {
-            AcceptedState::Rejected => proposal.status = ProposalStatus::Denied,
-            _ => (),
-        };
-
-        proposal.clone()
-    };
-
-    manager.send_update(&lobby_id, LobbyEvent::ProposalData(proposal.clone()));
-
-    warp::reply::with_status(
-        json(&proposal),
-        warp::http::StatusCode::OK
-    ).into_response()
 }
 
 fn gen_match_id() -> String {
@@ -955,12 +533,81 @@ async fn handle_websocket(
     }
 }
 
+enum LobbyApiError {
+    LobbyNotFound,
+    NotAuthenticated,
+    NotAuthorized,
+    ProposalNotFound,
+    ProposalExpired,
+    ProposalNotReady,
+}
+
+type LobbyApiResult<T> = Result<T, LobbyApiError>;
+
+fn result_to_response<T>(result: LobbyApiResult<T>) -> Response
+    where T: warp::Reply
+{
+    match result {
+        Ok(reply) => reply.into_response(),
+        Err(LobbyApiError::LobbyNotFound) => warp::http::StatusCode::NOT_FOUND.into_response(),
+        Err(LobbyApiError::NotAuthenticated) => warp::http::StatusCode::BAD_REQUEST.into_response(),
+        Err(LobbyApiError::NotAuthorized) => warp::http::StatusCode::UNAUTHORIZED.into_response(),
+        Err(LobbyApiError::ProposalNotFound) => warp::http::StatusCode::NOT_FOUND.into_response(),
+        Err(LobbyApiError::ProposalExpired) => warp::reply::with_status(
+            "proposal is no longer valid",
+            warp::http::StatusCode::BAD_REQUEST,
+        ).into_response(),
+        Err(LobbyApiError::ProposalNotReady) => warp::reply::with_status(
+            "not all players have accepted",
+            warp::http::StatusCode::BAD_REQUEST,
+        ).into_response(),
+    }
+}
+
+fn json_response<T>(result: LobbyApiResult<T>) -> Response
+    where T: Serialize
+{
+    let res = result.map(|value| json(&value));
+    return result_to_response(res);
+}
 
 struct LobbyRequestCtx {
     lobby_mgr: Arc<Mutex<LobbyManager>>,
     lobby_id: String,
     auth_header: Option<String>,
 }
+
+impl LobbyRequestCtx {
+    fn with_lobby<F, T>(&self, fun: F) -> Result<T, LobbyApiError>
+        where F: FnOnce(&mut Lobby) -> Result<T, LobbyApiError>
+    {
+        let lobby_id = self.lobby_id.to_lowercase();
+        let mut mgr = self.lobby_mgr.lock().unwrap();
+        let res = mgr.lobbies.get_mut(&lobby_id)
+            .ok_or(LobbyApiError::LobbyNotFound)
+            .and_then(fun);
+        return res;
+    }
+
+    fn broadcast_event(&self, ev: LobbyEvent) {
+        let lobby_id = self.lobby_id.to_lowercase();
+        let mut mgr = self.lobby_mgr.lock().unwrap();
+        mgr.send_update(&lobby_id, ev);
+    }
+}
+
+fn parse_auth(hex_token: &str) -> Option<Token> {
+    Token::from_hex(hex_token).ok()
+}
+
+fn auth_player(auth: &Option<String>, lobby: &Lobby) -> Option<usize> {
+    auth.as_ref()
+        .and_then(|val| val.strip_prefix("Bearer "))
+        .and_then(parse_auth)
+        .and_then(|t| lobby.token_player.get(&t).cloned())
+}
+
+
 
 fn lobby_context<MountPoint>(
     base: MountPoint,
@@ -981,17 +628,183 @@ fn lobby_context<MountPoint>(
 }
 
 fn get_lobby_by_id(req: LobbyRequestCtx) -> Response {
-    let mgr = req.lobby_mgr.lock().unwrap();
-    match mgr.lobbies.get(&req.lobby_id.to_lowercase()) {
-        Some(lobby) => {
-            json(&StrippedLobby::from(lobby.clone())).into_response()
-        },
-        None => warp::http::StatusCode::NOT_FOUND.into_response()
-    }
-
+    let res = req.with_lobby(|lobby| {
+        Ok(json(&StrippedLobby::from(lobby.clone())))
+    });
+    return result_to_response(res)
 }
 
 
+
+fn join_lobby(req: LobbyRequestCtx, player_params: PlayerParams)
+    -> Response
+{
+    // TODO: check for uniqueness of name and token
+    let game_manager = req.lobby_mgr.lock().unwrap().game_manager.clone();
+    let res = req.with_lobby(|lobby| {
+        let player_id = lobby.token_player.get(&player_params.token).cloned().unwrap_or_else(|| {
+            let id = lobby.next_player_id;
+            lobby.next_player_id += 1;
+            id   
+        });
+        let player = Player {
+            id: player_id,
+            name: player_params.name,
+            token: player_params.token,
+            // TODO?
+            connection_count: 0,
+            client_connected: game_manager
+                .lock()
+                .unwrap()
+                .game_server
+                .client_manager()
+                .is_connected(&player_params.token)
+        };
+        lobby.token_player.insert(player.token.clone(), player_id);
+        lobby.players.insert(player_id, player.clone());
+        Ok(StrippedPlayer::from(player))
+    });
+    if let Ok(player_data) = &res {
+        req.broadcast_event(LobbyEvent::PlayerData(player_data.clone()));
+    }
+
+    return json_response(res);
+}
+
+fn create_proposal(req: LobbyRequestCtx, params: ProposalParams)
+    -> Response
+{
+    let auth = &req.auth_header;
+    let res = req.with_lobby(|lobby| {
+        let player_id = auth_player(auth, lobby)
+            .ok_or(LobbyApiError::NotAuthenticated)?;
+
+        let proposal = Proposal {
+            owner_id: player_id,
+            config: params.config,
+            players: params.players.iter().map(|&player_id| {
+                ProposalPlayer {
+                    player_id,
+                    status: AcceptedState::Unanswered
+                }
+            }).collect(),
+            id: Uuid::new_v4().to_hyphenated().to_string(),
+            status: ProposalStatus::Pending,
+        };
+
+        lobby.proposals.insert(proposal.id.clone(), proposal.clone());
+
+        Ok(proposal)
+    });
+
+    if let Ok(proposal) = &res {
+        req.broadcast_event(LobbyEvent::ProposalData(proposal.clone()));
+    }
+
+    return json_response(res);
+}
+
+fn start_proposal(req: LobbyRequestCtx, proposal_id: String) -> Response {
+    let manager = req.lobby_mgr.clone();
+    let game_manager = req.lobby_mgr.lock().unwrap().game_manager.clone();
+
+    let auth = &req.auth_header;
+    let res = req.with_lobby(|lobby| {
+        let player_id = auth_player(auth, lobby)
+            .ok_or(LobbyApiError::NotAuthenticated)?;
+        let proposal = lobby.proposals.get_mut(&proposal_id)
+            .ok_or(LobbyApiError::ProposalNotFound)?;
+
+        if player_id != proposal.owner_id {
+            return Err(LobbyApiError::NotAuthorized);
+        }
+
+        match proposal.status {
+            ProposalStatus::Pending => (),
+            _ => return Err(LobbyApiError::ProposalExpired)
+        }
+
+        let mut tokens = vec![];
+
+        for accepting_player in proposal.players.iter() {
+            // player should exist. TODO: maybe make this more safe?
+            let player = lobby.players.get(&accepting_player.player_id).unwrap();
+
+            if accepting_player.status != AcceptedState::Accepted || !player.client_connected {
+                return Err(LobbyApiError::ProposalNotReady);
+            }
+
+            tokens.push(player.token);
+        }
+        let match_config: planetwars::Config = proposal.config.clone();
+
+        let cb_mgr = manager.clone();
+        let cb_lobby_id = lobby.id.clone();
+        let match_id = game_manager.lock().unwrap().create_match(tokens, match_config.clone(), move |match_id| {
+            println!("completed match {}", &match_id);
+            let mut mgr = cb_mgr.lock().unwrap();
+            mgr.lobbies.get_mut(&cb_lobby_id).and_then(|lobby| {
+                if let Some(match_meta) = lobby.matches.get_mut(&match_id) {
+                    match_meta.status = MatchStatus::Done;
+                    Some(match_meta.clone())
+                } else {
+                    None
+                }
+            }).map(|match_meta| {
+                mgr.send_update(&cb_lobby_id, LobbyEvent::MatchData(match_meta));
+            });
+        });
+        let match_meta = MatchMeta {
+            id: match_id.clone(),
+            timestamp: Utc::now(),
+            status: MatchStatus::Playing,
+            config: proposal.config.clone(),
+            players: proposal.players.iter().map(|p| p.player_id.clone()).collect(),
+        };
+        lobby.matches.insert(match_meta.id.clone(), match_meta.clone());
+        proposal.status = ProposalStatus::Accepted { match_id };
+        Ok(proposal.clone())
+    });
+
+    if let Ok(proposal) = &res {
+        req.broadcast_event(LobbyEvent::ProposalData(proposal.clone()));
+    }
+
+    return json_response(res);
+}
+
+fn accept_proposal(
+    req: LobbyRequestCtx,
+    proposal_id: String,
+    params: AcceptParams,
+) -> Response {
+    let res = req.with_lobby(|lobby| {
+        let player_id = auth_player(&req.auth_header, lobby)
+            .ok_or(LobbyApiError::NotAuthenticated)?;
+
+        let proposal = lobby.proposals.get_mut(&proposal_id)
+            .ok_or(LobbyApiError::ProposalNotFound)?;
+        
+        for player in proposal.players.iter_mut() {
+            if player.player_id == player_id {
+                player.status = params.status.clone();
+            }
+        }
+
+        match params.status {
+            AcceptedState::Rejected => proposal.status = ProposalStatus::Denied,
+            _ => (),
+        };
+
+        Ok(proposal.clone())
+    });
+
+    if let Ok(proposal) = &res {
+        req.broadcast_event(LobbyEvent::ProposalData(proposal.clone()));
+    }
+
+    return json_response(res);
+}
 
 #[tokio::main]
 async fn main() {
@@ -1009,100 +822,55 @@ async fn main() {
     init_callbacks(lobby_manager.clone());
 
     // POST /lobbies
-    let post_lobbies_route = warp::path("lobbies")
-        .and(warp::path::end())
+    let post_lobbies_route = warp::path!("lobbies")
         .and(warp::post())
         .and(with_lobby_manager(lobby_manager.clone()))
         .and(warp::body::json())
         .map(create_lobby);
 
-    // GET /lobbies
-    let get_lobbies_route = warp::path("lobbies")
-        .and(warp::path::end())
-        .and(warp::get())
-        .and(with_lobby_manager(lobby_manager.clone()))
-        .map(get_lobbies);
-
-    let lobby_scope = lobby_context(
+    let m = lobby_manager.clone();
+    let lobby_scope =  move || lobby_context(
         warp::path!("lobbies" / String / .. ),
-        lobby_manager.clone(),
+        m.clone(),
     );
 
     // GET /lobbies/<id>
     let get_lobbies_id_route =
-        lobby_scope
-        .and(warp::path::end())
-        .and(warp::get())
-        .map(get_lobby_by_id);
-
-    // PUT /lobbies/<id>
-    let put_lobbies_id_route = 
-        warp::path!("lobbies" / String)
-        .and(warp::path::end())
-        .and(warp::put())
-        .and(with_lobby_manager(lobby_manager.clone()))
-        .and(warp::header::optional::<String>("authorization"))
-        .and(warp::body::json())
-        .map(update_lobby_by_id);
-
-    // DELETE /lobbies/<id>
-    let delete_lobbies_id_route = warp::path!("lobbies" / String)
-        .and(warp::path::end())
-        .and(warp::delete())
-        .and(with_lobby_manager(lobby_manager.clone()))
-        .and(warp::header::optional::<String>("authorization"))
-        .map(delete_lobby_by_id);
+        lobby_scope()
+            .and(warp::path::end())
+            .and(warp::get())
+            .map(get_lobby_by_id);
 
     // POST /lobbies/<id>/join
-    let post_lobbies_id_players_route = warp::path!("lobbies" / String / "join")
-        .and(warp::path::end())
-        .and(warp::post())
-        .and(with_lobby_manager(lobby_manager.clone()))
-        .and(warp::body::json())
-        .map(add_player_to_lobby);
-
-    // PUT /lobbies/<id>/players
-    let put_lobbies_id_players_route = warp::path!("lobbies" / String / "players" / String)
-        .and(warp::path::end())
-        .and(warp::put())
-        .and(with_lobby_manager(lobby_manager.clone()))
-        .and(warp::header::optional::<String>("authorization"))
-        .and(warp::body::json())
-        .map(update_player_in_lobby);
-
-    // DELETE /lobbies/<id>/players
-    let delete_lobbies_id_players_route = warp::path!("lobbies" / String / "players" / usize)
-        .and(warp::path::end())
-        .and(warp::delete())
-        .and(with_lobby_manager(lobby_manager.clone()))
-        .and(warp::header::optional::<String>("authorization"))
-        .map(remove_player_from_lobby);
+    let post_lobbies_id_players_route =
+        lobby_scope()
+            .and(warp::path!("join"))
+            .and(warp::post())
+            .and(warp::body::json())
+            .map(join_lobby);
 
     // POST /lobbies/<id>/proposals
-    let post_lobbies_id_proposals_route = warp::path!("lobbies" / String / "proposals")
-        .and(warp::path::end())
-        .and(warp::post())
-        .and(with_lobby_manager(lobby_manager.clone()))
-        .and(warp::header::optional::<String>("authorization"))
-        .and(warp::body::json())
-        .map(add_proposal_to_lobby);
+    let post_lobbies_id_proposals_route = 
+        lobby_scope()
+            .and(warp::path!("proposals"))
+            .and(warp::post())
+            .and(warp::body::json())
+            .map(create_proposal);
     
     // POST /lobbies/<lobby_id>/proposals/<proposal_id>/start
-    let post_lobbies_id_proposals_id_start_route = warp::path!("lobbies" / String / "proposals" / String / "start")
-        .and(warp::path::end())
-        .and(warp::post())
-        .and(with_lobby_manager(lobby_manager.clone()))
-        .and(warp::header::optional::<String>("authorization"))
-        .map(start_proposal);
+    let post_lobbies_id_proposals_id_start_route = 
+        lobby_scope()
+            .and(warp::path!("proposals" / String / "start"))
+            .and(warp::post())
+            .map(start_proposal);
     
     // POST /lobbies/<lobby_id>/proposals/<proposal_id>/accept
-    let post_lobbies_id_proposals_id_accept_route = warp::path!("lobbies" / String / "proposals" / String / "accept")
-        .and(warp::path::end())
-        .and(warp::post())
-        .and(with_lobby_manager(lobby_manager.clone()))
-        .and(warp::header::optional::<String>("authorization"))
-        .and(warp::body::json())
-        .map(set_player_accepted_state);
+    let post_lobbies_id_proposals_id_accept_route =
+        lobby_scope()
+            .and(warp::path!("proposals" / String / "accept"))
+            .and(warp::post())
+            .and(warp::body::json())
+            .map(accept_proposal);
     
     // GET /matches
     let get_matches_route = warp::path("matches")
@@ -1128,12 +896,7 @@ async fn main() {
 
     let routes = post_lobbies_route
                               .or(get_lobbies_id_route)
-                              .or(get_lobbies_route)
-                              .or(put_lobbies_id_route)
-                              .or(delete_lobbies_id_route)
                               .or(post_lobbies_id_players_route)
-                              .or(put_lobbies_id_players_route)
-                              .or(delete_lobbies_id_players_route)
                               .or(post_lobbies_id_proposals_id_start_route)
                               .or(post_lobbies_id_proposals_route)
                               .or(post_lobbies_id_proposals_id_accept_route)
