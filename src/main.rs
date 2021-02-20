@@ -639,6 +639,7 @@ fn get_lobby_by_id(req: LobbyRequestCtx) -> Response {
 fn join_lobby(req: LobbyRequestCtx, player_params: PlayerParams)
     -> Response
 {
+    let player_token = player_params.token;
     // TODO: check for uniqueness of name and token
     let game_manager = req.lobby_mgr.lock().unwrap().game_manager.clone();
     let res = req.with_lobby(|lobby| {
@@ -650,7 +651,7 @@ fn join_lobby(req: LobbyRequestCtx, player_params: PlayerParams)
         let player = Player {
             id: player_id,
             name: player_params.name,
-            token: player_params.token,
+            token: player_params.token.clone(),
             // TODO?
             connection_count: 0,
             client_connected: game_manager
@@ -666,6 +667,13 @@ fn join_lobby(req: LobbyRequestCtx, player_params: PlayerParams)
     });
     if let Ok(player_data) = &res {
         req.broadcast_event(LobbyEvent::PlayerData(player_data.clone()));
+        req.lobby_mgr
+            .lock()
+            .unwrap()
+            .token_player
+            .entry(player_token)
+            .or_insert_with(|| HashSet::new())
+            .insert((req.lobby_id.to_lowercase(), player_data.id));
     }
 
     return json_response(res);
