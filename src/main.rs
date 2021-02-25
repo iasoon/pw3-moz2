@@ -14,14 +14,14 @@ use mozaic_core::msg_stream::{MsgStreamHandle};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use warp::{Rejection, reply::{json,Reply,Response}, ws::WebSocket};
+use warp::{Rejection, reply::{json,Reply,Response}};
 use warp::Filter;
 
 
 use std::{convert::Infallible, sync::{Arc, Mutex}};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::{HashMap, HashSet};
-use tokio_stream::wrappers::UnboundedReceiverStream;
+
+mod websocket;
 
 use hex::FromHex;
 use rand::Rng;
@@ -44,19 +44,19 @@ struct PlayerParams {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-struct StrippedPlayer {
+pub struct StrippedPlayer {
     id: usize,
     name: String,
     connected: bool,
     client_connected: bool,
 }
 
-struct GameManager {
+pub struct GameManager {
     game_server: GameServer,
     matches: HashMap<String, MatchData>
 }
 
-struct MatchData {
+pub struct MatchData {
     log: MsgStreamHandle<String>,
 }
 
@@ -90,7 +90,7 @@ impl GameManager {
 }
 
 #[derive(Clone, Debug)]
-struct Lobby {
+pub struct Lobby {
     id: String,
     name: String,
     public: bool,
@@ -107,7 +107,7 @@ struct Lobby {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct StrippedLobby {
+pub struct StrippedLobby {
     id: String,
     name: String,
     public: bool,
@@ -117,14 +117,14 @@ struct StrippedLobby {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct LobbyConfig {
-    name: String,
-    public: bool,
+pub struct LobbyConfig {
+    pub name: String,
+    pub public: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct MatchStartConfig {
-    players: Vec<String>
+pub struct MatchStartConfig {
+    pub players: Vec<String>
 }
 
 impl From<LobbyConfig> for Lobby {
@@ -170,7 +170,7 @@ impl From<Player> for StrippedPlayer {
     }
 }
 
-struct LobbyManager {
+pub struct LobbyManager {
     game_manager: Arc<Mutex<GameManager>>,
     lobbies: HashMap<String, Lobby>,
     websocket_connections: HashMap<String, Vec<WsConnection>>,
@@ -261,7 +261,7 @@ struct ProposalParams {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct Proposal {
+pub struct Proposal {
     id: String,
     owner_id: usize,
     config: planetwars::Config,
@@ -301,7 +301,7 @@ enum MatchStatus {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct MatchMeta {
+pub struct MatchMeta {
     id: String,
     timestamp: DateTime<Utc>,
     config: planetwars::Config,
@@ -314,7 +314,7 @@ struct MatchMeta {
 #[derive(Serialize, Deserialize)]
 #[serde(tag="type", content = "data")]
 #[serde(rename_all="camelCase")]
-enum LobbyEvent {
+pub enum LobbyEvent {
     LobbyState(StrippedLobby),
     PlayerData(StrippedPlayer),
     ProposalData(Proposal),
@@ -398,137 +398,6 @@ fn get_match_log(
                 e.as_ref().to_string()
             }).collect::<Vec<_>>();
             json(&log).into_response()
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type")]
-#[serde(rename_all="camelCase")]
-enum WsClientMessage {
-    Connect(WsConnectRequest)
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all="camelCase")]
-struct WsConnectRequest {
-    lobby_id: String,
-    #[serde(with = "hex")]
-    token: Token,
-}
-
-static NEXT_CONNECTION_ID: AtomicUsize = AtomicUsize::new(1);
-
-async fn handle_websocket(
-    ws: WebSocket,
-    mgr: Arc<Mutex<LobbyManager>>
-)
-{
-    let conn_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
-    let (tx, rx) = mpsc::unbounded_channel();
-    let (ws_tx, mut ws_rx) = ws.split();
-
-
-    let messages = UnboundedReceiverStream::new(rx).map(|text| {
-        Ok(warp::ws::Message::text(text))
-    });
-    tokio::task::spawn(messages.forward(ws_tx).map(|res| {
-        if let Err(e) = res {
-            eprintln!("websocket send error: {}", e);
-        }
-    }));
-
-    let mut connection_players = Vec::new();
-    while let Some(res) = ws_rx.next().await {
-
-        let ws_msg = match res {
-            Ok(ws_msg) => ws_msg,
-            Err(e) => {
-                eprintln!("websocket error(uid={}): {}", conn_id, e);
-                break;
-            }
-        };
-
-        // TODO: UGLY UGh
-        let client_msg: WsClientMessage = match ws_msg.to_str() {
-            Ok(text) => match serde_json::from_str(text) {
-                Ok(req) => req,
-                Err(err) => {
-                    eprintln!("{}", err);
-                    continue
-                }
-            }
-            Err(()) => continue,
-        };
-
-        match client_msg {
-            WsClientMessage::Connect(req) => {
-                let mut lobby_mgr = mgr.lock().unwrap();
-                let (lobby_data, player_data) = {
-                    let lobby = match lobby_mgr.lobbies.get_mut(&req.lobby_id) {
-                        None => continue,
-                        Some(lobby) => lobby,
-                    };
-    
-                    let player_data = match lobby.token_player.get(&req.token) {
-                        None => continue,
-                        Some(&player_id) => {
-                            connection_players.push((req.lobby_id.clone(), player_id));
-                            let player = lobby.players.get_mut(&player_id).unwrap();
-                            player.connection_count += 1;
-
-                            if player.connection_count == 1 {
-                                // update required
-                                Some(StrippedPlayer::from(player.clone()))
-                            } else {
-                                None
-                            }
-                        }
-                    };
-    
-    
-                    let lobby_data = StrippedLobby::from(lobby.clone());
-                    (lobby_data, player_data)
-                };
-
-                if let Some(data) = player_data {
-                    lobby_mgr.send_update(&req.lobby_id, LobbyEvent::PlayerData(data));
-                }
-
-                // update current state to prevent desync
-                let resp = serde_json::to_string(&LobbyEvent::LobbyState(lobby_data)).unwrap();
-                tx.send(resp).unwrap();
-
-                // add connection to connection pool
-                lobby_mgr.websocket_connections
-                    .entry(req.lobby_id)
-                    .or_insert_with(|| Vec::new())
-                    .push(WsConnection {
-                        _conn_id: conn_id,
-                        tx: tx.clone(),
-                    });
-            }
-        }
-    }
-    // connection done, disconnect!
-    let mut lobby_mgr = mgr.lock().unwrap();
-    for (lobby_id, player_id) in connection_players.into_iter() {
-        let update = match lobby_mgr.lobbies.get_mut(&lobby_id) {
-            None => continue,
-            Some(lobby) => {
-                lobby.players.get_mut(&player_id).and_then(|player| {
-                    player.connection_count -= 1;
-                    if player.connection_count == 0 {
-                        // update required
-                        Some(StrippedPlayer::from(player.clone()))
-                    } else {
-                        None
-                    }
-                })
-            }
-        };
-
-        if let Some(player_data) = update {
-            lobby_mgr.send_update(&lobby_id, LobbyEvent::PlayerData(player_data));
         }
     }
 }
@@ -899,7 +768,7 @@ async fn main() {
         .and(warp::ws())
         .and(with_lobby_manager(lobby_manager.clone()))
         .map(|ws: warp::ws::Ws, mgr| {
-            ws.on_upgrade(move |socket| handle_websocket(socket, mgr))
+            ws.on_upgrade(move |socket| websocket::handle_websocket(socket, mgr))
         });
 
     let routes = post_lobbies_route
