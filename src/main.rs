@@ -2,29 +2,33 @@
 
 use chrono::{DateTime, Utc};
 use mozaic_core::{EventBus, match_context::PlayerHandle, msg_stream::msg_stream};
+use planetwars::MatchConfig;
 use serde::{Deserialize, Serialize};
 
 use mozaic_core::client_manager::ClientHandle;
 use futures::{FutureExt, StreamExt, stream};
 
 mod planetwars;
+mod pw_maps;
 
 use mozaic_core::{Token, GameServer, MatchCtx};
 use mozaic_core::msg_stream::{MsgStreamHandle};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use warp::{Rejection, reply::{json,Reply,Response}};
+use warp::{Rejection, reply::{Reply, Response, json}};
 use warp::Filter;
 
 
-use std::{convert::Infallible, sync::{Arc, Mutex}};
+use std::{convert::Infallible, path::Path, sync::{Arc, Mutex}};
 use std::collections::{HashMap, HashSet};
 
 mod websocket;
 
 use hex::FromHex;
 use rand::Rng;
+
+const MAPS_DIRECTORY: &'static str = "maps";
 
 #[derive(Debug, Clone)]
 struct Player {
@@ -61,7 +65,7 @@ pub struct MatchData {
 }
 
 impl GameManager {
-    fn create_match<F>(&mut self, tokens: Vec<Token>, game_config: planetwars::Config, cb: F) -> String
+    fn create_match<F>(&mut self, tokens: Vec<Token>, match_config: MatchConfig, cb: F) -> String
         where F: 'static + Send + Sync + FnOnce(String) -> ()
     {
         let clients = tokens.iter().map(|token| {
@@ -78,7 +82,7 @@ impl GameManager {
         tokio::spawn(run_match(
             clients,
             self.game_server.clone(),
-            game_config,
+            match_config,
             log).map(|_| cb(cb_match_id))
         );
         return match_id;
@@ -88,6 +92,15 @@ impl GameManager {
         self.matches.keys().cloned().collect()
     }
 }
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct PwMapData {
+    pub name: String,
+    pub max_players: usize,
+}
+
+pub type PwMaps = HashMap<String, PwMapData>;
 
 #[derive(Clone, Debug)]
 pub struct Lobby {
@@ -173,18 +186,20 @@ impl From<Player> for StrippedPlayer {
 pub struct LobbyManager {
     game_manager: Arc<Mutex<GameManager>>,
     lobbies: HashMap<String, Lobby>,
+    maps: Arc<PwMaps>,
     websocket_connections: HashMap<String, Vec<WsConnection>>,
     /// token -> {(lobby_id, player_id)}
     token_player: HashMap<Token, HashSet<(String, usize)>>,
 }
 
 impl LobbyManager {
-    pub fn new(game_manager: Arc<Mutex<GameManager>>) -> Self {
+    pub fn new(game_manager: Arc<Mutex<GameManager>>, maps: PwMaps) -> Self {
         Self {
             game_manager,
             lobbies: HashMap::new(),
             websocket_connections: HashMap::new(),
             token_player: HashMap::new(),
+            maps: Arc::new(maps),
         }
     }
 
@@ -255,8 +270,9 @@ impl WsConnection {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all="camelCase")]
 struct ProposalParams {
-    config: planetwars::Config,
+    config: planetwars::MatchConfig,
     players: Vec<usize>
 }
 
@@ -264,7 +280,7 @@ struct ProposalParams {
 pub struct Proposal {
     id: String,
     owner_id: usize,
-    config: planetwars::Config,
+    config: planetwars::MatchConfig,
     players: Vec<ProposalPlayer>,
     #[serde(flatten)]
     status: ProposalStatus,
@@ -304,7 +320,7 @@ enum MatchStatus {
 pub struct MatchMeta {
     id: String,
     timestamp: DateTime<Utc>,
-    config: planetwars::Config,
+    config: planetwars::MatchConfig,
     // TODO: this should maybe be a hashmap for the more general case
     players: Vec<usize>,
     status: MatchStatus,
@@ -324,7 +340,7 @@ pub enum LobbyEvent {
 async fn run_match(
     mut clients: Vec<ClientHandle>,
     serv: GameServer,
-    config: planetwars::Config,
+    config: planetwars::MatchConfig,
     log: MsgStreamHandle<String>)
 {
     let event_bus = Arc::new(Mutex::new(EventBus::new()));
@@ -406,6 +422,7 @@ enum LobbyApiError {
     LobbyNotFound,
     NotAuthenticated,
     NotAuthorized,
+    InvalidProposalParams(String),
     ProposalNotFound,
     ProposalExpired,
     ProposalNotReady,
@@ -421,6 +438,10 @@ fn result_to_response<T>(result: LobbyApiResult<T>) -> Response
         Err(LobbyApiError::LobbyNotFound) => warp::http::StatusCode::NOT_FOUND.into_response(),
         Err(LobbyApiError::NotAuthenticated) => warp::http::StatusCode::BAD_REQUEST.into_response(),
         Err(LobbyApiError::NotAuthorized) => warp::http::StatusCode::UNAUTHORIZED.into_response(),
+        Err(LobbyApiError::InvalidProposalParams(msg)) => warp::reply::with_status(
+            msg,
+            warp::http::StatusCode::BAD_REQUEST
+        ).into_response(),
         Err(LobbyApiError::ProposalNotFound) => warp::http::StatusCode::NOT_FOUND.into_response(),
         Err(LobbyApiError::ProposalExpired) => warp::reply::with_status(
             "proposal is no longer valid",
@@ -548,13 +569,33 @@ fn join_lobby(req: LobbyRequestCtx, player_params: PlayerParams)
     return json_response(res);
 }
 
+const MAX_TURNS_ALLOWED: usize = 500;
+
 fn create_proposal(req: LobbyRequestCtx, params: ProposalParams)
     -> Response
 {
     let auth = &req.auth_header;
+    let maps = req.lobby_mgr.lock().unwrap().maps.clone();
     let res = req.with_lobby(|lobby| {
         let player_id = auth_player(auth, lobby)
             .ok_or(LobbyApiError::NotAuthenticated)?;
+
+        if params.config.max_turns > MAX_TURNS_ALLOWED {
+            return Err(LobbyApiError::InvalidProposalParams(
+                format!("max allowed turns is {}", MAX_TURNS_ALLOWED))
+            );
+        }
+
+        let map_data = maps.get(&params.config.map_name)
+            .ok_or_else(|| LobbyApiError::InvalidProposalParams(
+                "map does not exist".to_string()
+            ))?;
+        
+        if params.players.len() > map_data.max_players {
+            return Err(LobbyApiError::InvalidProposalParams(
+                format!("too many players")
+            ));
+        }
 
         let proposal = Proposal {
             owner_id: player_id,
@@ -613,7 +654,7 @@ fn start_proposal(req: LobbyRequestCtx, proposal_id: String) -> Response {
 
             tokens.push(player.token);
         }
-        let match_config: planetwars::Config = proposal.config.clone();
+        let match_config = proposal.config.clone();
 
         let cb_mgr = manager.clone();
         let cb_lobby_id = lobby.id.clone();
@@ -683,8 +724,16 @@ fn accept_proposal(
     return json_response(res);
 }
 
+fn get_maps(mgr: Arc<Mutex<LobbyManager>>) -> impl Reply {
+    let mgr = mgr.lock().unwrap();
+    let maps: Vec<&PwMapData> = mgr.maps.values().collect();
+    return json(&maps);
+}
+
 #[tokio::main]
 async fn main() {
+    let maps = pw_maps::build_map_index(Path::new(MAPS_DIRECTORY))
+        .expect("failed to read maps");
     let game_server = GameServer::new();
 
     // TODO: can we run these on the same port? Would that be desirable?
@@ -695,7 +744,7 @@ async fn main() {
         matches: HashMap::new(),
     }));
 
-    let lobby_manager = Arc::new(Mutex::new(LobbyManager::new(game_manager.clone())));
+    let lobby_manager = Arc::new(Mutex::new(LobbyManager::new(game_manager.clone(), maps)));
     init_callbacks(lobby_manager.clone());
 
     // POST /lobbies
@@ -749,6 +798,11 @@ async fn main() {
             .and(warp::body::json())
             .map(accept_proposal);
     
+    let get_maps_route = warp::path!("maps")
+        .and(warp::get())
+        .and(with_lobby_manager(lobby_manager.clone()))
+        .map(get_maps);
+    
     // GET /matches
     let get_matches_route = warp::path("matches")
         .and(warp::path::end())
@@ -777,6 +831,7 @@ async fn main() {
                               .or(post_lobbies_id_proposals_id_start_route)
                               .or(post_lobbies_id_proposals_route)
                               .or(post_lobbies_id_proposals_id_accept_route)
+                              .or(get_maps_route)
                               .or(get_matches_route)
                               .or(get_match_route)
                               .or(websocket_route);

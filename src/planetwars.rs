@@ -2,6 +2,7 @@ use futures::stream::futures_unordered::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use mozaic_core::match_context::{MatchCtx, RequestResult};
 use tokio::time::Duration;
+use serde::{Serialize, Deserialize};
 
 use serde_json;
 
@@ -13,15 +14,28 @@ use planetwars_rules::protocol::{self as proto, PlayerAction};
 use planetwars_rules::serializer as pw_serializer;
 use planetwars_rules::{PlanetWars, PwConfig};
 
+use crate::MAPS_DIRECTORY;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct MatchConfig {
+    pub map_name: String,
+    pub max_turns: usize,
+}
+
 pub struct PwMatch {
     match_ctx: MatchCtx,
     match_state: PlanetWars,
 }
 
 impl PwMatch {
-    pub fn create(match_ctx: MatchCtx, config: PwConfig) -> Self {
+    pub fn create(match_ctx: MatchCtx, config: MatchConfig) -> Self {
+        let pw_config = PwConfig {
+            map_file: format!("{}/{}.json", MAPS_DIRECTORY, config.map_name),
+            max_turns: config.max_turns as u64,
+        };
         // TODO: this is kind of hacked together at the moment
-        let match_state = PlanetWars::create(config, match_ctx.players().len());
+        let match_state = PlanetWars::create(pw_config, match_ctx.players().len());
 
         PwMatch {
             match_state,
