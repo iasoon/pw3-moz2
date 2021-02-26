@@ -12,7 +12,7 @@ mod planetwars;
 mod pw_maps;
 
 use mozaic_core::{Token, GameServer, MatchCtx};
-use mozaic_core::msg_stream::{MsgStreamHandle};
+use mozaic_core::msg_stream::MsgStreamHandle;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -335,6 +335,15 @@ pub enum LobbyEvent {
     PlayerData(StrippedPlayer),
     ProposalData(Proposal),
     MatchData(MatchMeta),
+    // Ugly, quickly, dirty, but effective
+    MatchLogEvent(MatchLogEvent),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct MatchLogEvent {
+    pub stream_id: usize,
+    pub event: String,
 }
 
 async fn run_match(
@@ -380,7 +389,6 @@ fn create_lobby(
     let lobby = manager.create_lobby(lobby_config);
     json(&StrippedLobby::from(lobby.clone()))
 }
-
 
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -681,11 +689,13 @@ fn start_proposal(req: LobbyRequestCtx, proposal_id: String) -> Response {
         };
         lobby.matches.insert(match_meta.id.clone(), match_meta.clone());
         proposal.status = ProposalStatus::Accepted { match_id };
-        Ok(proposal.clone())
+        Ok((proposal.clone(), match_meta))
     });
 
-    if let Ok(proposal) = &res {
+    if let Ok((proposal, match_meta)) = &res {
+        // TODO: spurious clones
         req.broadcast_event(LobbyEvent::ProposalData(proposal.clone()));
+        req.broadcast_event(LobbyEvent::MatchData(match_meta.clone()));
     }
 
     return json_response(res);

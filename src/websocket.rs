@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 
-use crate::{LobbyEvent, LobbyManager, StrippedLobby, StrippedPlayer, WsConnection};
-use futures::StreamExt;
+use crate::{LobbyEvent, LobbyManager, MatchLogEvent, StrippedLobby, StrippedPlayer, WsConnection};
+use futures::{StreamExt, future};
 use futures::FutureExt;
 use mozaic_core::Token;
 use serde::{Serialize, Deserialize};
@@ -16,6 +16,7 @@ use warp::ws::WebSocket;
 enum WsClientMessage {
     AuthenticatePlayer(AuthenticatePlayer),
     SubscribeToLobby(SubscribeToLobby),
+    SubscribeToMatch(SubscribeToMatch),
 }
 
 
@@ -31,6 +32,13 @@ struct AuthenticatePlayer {
 #[serde(rename_all="camelCase")]
 struct SubscribeToLobby {
     lobby_id: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+struct SubscribeToMatch {
+    match_id: String,
+    stream_id: usize,
 }
 
 struct ConnectionHandler {
@@ -49,6 +57,7 @@ impl ConnectionHandler {
         match msg {
             WsClientMessage::AuthenticatePlayer(req) => self.authenticate(req),
             WsClientMessage::SubscribeToLobby(req) => self.subscribe_to_lobby(req),
+            WsClientMessage::SubscribeToMatch(req) => self.subscribe_to_match(req),
         }
     }
 
@@ -79,6 +88,26 @@ impl ConnectionHandler {
             });
     }
 
+    fn subscribe_to_match(&mut self, req: SubscribeToMatch) {
+        let lobby_mgr = self.mgr.lock().unwrap();
+        let game_mgr = lobby_mgr.game_manager.lock().unwrap();
+        if let Some(match_data) = game_mgr.matches.get(&req.match_id) {
+            let tx = self.tx.clone();
+            let task = match_data.log.reader().for_each(move |log_entry| {
+                let event= LobbyEvent::MatchLogEvent(MatchLogEvent {
+                    stream_id: req.stream_id,
+                    event: log_entry.as_ref().clone(),
+                });
+                let serialized = serde_json::to_string(&event).unwrap();
+                // just carry on if things are broken, for now.
+                // TODO: have some decency
+                let _result = tx.send(serialized);
+                future::ready(())
+            });
+            tokio::spawn(task);
+        }
+    }
+
     fn authenticate(&mut self, req: AuthenticatePlayer) {
         let mut lobby_mgr = self.mgr.lock().unwrap();
         let player_data = {
@@ -87,7 +116,6 @@ impl ConnectionHandler {
                 None => return,
                 Some(lobby) => lobby,
             };
-
             // TODO: log, error, ANYTHING
 
             match lobby.token_player.get(&req.token) {
