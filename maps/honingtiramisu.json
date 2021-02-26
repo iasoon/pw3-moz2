@@ -1,0 +1,536 @@
+{
+  "planets": [
+    {
+      "ship_count": 20,
+      "x": 0.0,
+      "y": 0.0,
+      "owner": 1,
+      "name": "Klutzy Change"
+    },
+    {
+      "ship_count": 20,
+      "x": 5.0,
+      "y": 0.0,
+      "owner": 1,
+      "name": "Weighty Bite"
+    },
+    {
+      "ship_count": 20,
+      "x": 10.0,
+      "y": 0.0,
+      "owner": 1,
+      "name": "Massive Calm"
+    },
+    {
+      "ship_count": 20,
+      "x": 16.25,
+      "y": 2.5,
+      "owner": null,
+      "name": "Upbeat Wait"
+    },
+    {
+      "ship_count": 20,
+      "x": 21.25,
+      "y": 2.5,
+      "owner": null,
+      "name": "Mediocre Beer"
+    },
+    {
+      "ship_count": 20,
+      "x": 36.25,
+      "y": 2.5,
+      "owner": null,
+      "name": "Extra-large Thing"
+    },
+    {
+      "ship_count": 20,
+      "x": 0.0,
+      "y": 5.0,
+      "owner": 1,
+      "name": "Ill King"
+    },
+    {
+      "ship_count": 20,
+      "x": 10.0,
+      "y": 5.0,
+      "owner": null,
+      "name": "Detailed Volume"
+    },
+    {
+      "ship_count": 20,
+      "x": 35.0,
+      "y": 5.0,
+      "owner": null,
+      "name": "Adorable Plastic"
+    },
+    {
+      "ship_count": 20,
+      "x": 37.5,
+      "y": 5.0,
+      "owner": null,
+      "name": "Frizzy Dust"
+    },
+    {
+      "ship_count": 20,
+      "x": 23.75,
+      "y": 7.5,
+      "owner": null,
+      "name": "Legal Highway"
+    },
+    {
+      "ship_count": 20,
+      "x": 36.25,
+      "y": 7.5,
+      "owner": null,
+      "name": "Assured Bite"
+    },
+    {
+      "ship_count": 20,
+      "x": 0.0,
+      "y": 10.0,
+      "owner": 1,
+      "name": "Velvety Text"
+    },
+    {
+      "ship_count": 20,
+      "x": 5.0,
+      "y": 10.0,
+      "owner": null,
+      "name": "Accomplished Carpet"
+    },
+    {
+      "ship_count": 20,
+      "x": 10.0,
+      "y": 10.0,
+      "owner": null,
+      "name": "Wiry Native"
+    },
+    {
+      "ship_count": 20,
+      "x": 20.0,
+      "y": 10.0,
+      "owner": null,
+      "name": "These Obligation"
+    },
+    {
+      "ship_count": 20,
+      "x": 16.25,
+      "y": 12.5,
+      "owner": null,
+      "name": "These Card"
+    },
+    {
+      "ship_count": 20,
+      "x": 18.75,
+      "y": 12.5,
+      "owner": null,
+      "name": "Athletic Stomach"
+    },
+    {
+      "ship_count": 20,
+      "x": 21.25,
+      "y": 12.5,
+      "owner": null,
+      "name": "Physical Meal"
+    },
+    {
+      "ship_count": 20,
+      "x": 26.25,
+      "y": 12.5,
+      "owner": null,
+      "name": "Elliptical Second"
+    },
+    {
+      "ship_count": 20,
+      "x": 36.25,
+      "y": 12.5,
+      "owner": null,
+      "name": "Legal Travel"
+    },
+    {
+      "ship_count": 20,
+      "x": 12.5,
+      "y": 15.0,
+      "owner": null,
+      "name": "Frilly Use"
+    },
+    {
+      "ship_count": 20,
+      "x": 17.5,
+      "y": 15.0,
+      "owner": null,
+      "name": "Concrete Deep"
+    },
+    {
+      "ship_count": 20,
+      "x": 35.0,
+      "y": 15.0,
+      "owner": null,
+      "name": "Classic Show"
+    },
+    {
+      "ship_count": 20,
+      "x": 37.5,
+      "y": 15.0,
+      "owner": null,
+      "name": "Wrong Ask"
+    },
+    {
+      "ship_count": 20,
+      "x": 23.75,
+      "y": 17.5,
+      "owner": null,
+      "name": "Well-lit Freedom"
+    },
+    {
+      "ship_count": 20,
+      "x": 28.75,
+      "y": 17.5,
+      "owner": null,
+      "name": "Tall Variation"
+    },
+    {
+      "ship_count": 20,
+      "x": 36.25,
+      "y": 17.5,
+      "owner": null,
+      "name": "Athletic Permit"
+    },
+    {
+      "ship_count": 20,
+      "x": 5.0,
+      "y": 20.0,
+      "owner": null,
+      "name": "Cooked Medium"
+    },
+    {
+      "ship_count": 20,
+      "x": 15.0,
+      "y": 20.0,
+      "owner": null,
+      "name": "Tremendous Deposit"
+    },
+    {
+      "ship_count": 20,
+      "x": 20.0,
+      "y": 20.0,
+      "owner": null,
+      "name": "Blank Wrap"
+    },
+    {
+      "ship_count": 20,
+      "x": 22.5,
+      "y": 20.0,
+      "owner": null,
+      "name": "Mountainous Lecture"
+    },
+    {
+      "ship_count": 20,
+      "x": 25.0,
+      "y": 20.0,
+      "owner": null,
+      "name": "Sudden Pressure"
+    },
+    {
+      "ship_count": 20,
+      "x": 3.75,
+      "y": 22.5,
+      "owner": null,
+      "name": "Untried Visit"
+    },
+    {
+      "ship_count": 20,
+      "x": 6.25,
+      "y": 22.5,
+      "owner": null,
+      "name": "Lucky Private"
+    },
+    {
+      "ship_count": 20,
+      "x": 21.25,
+      "y": 22.5,
+      "owner": null,
+      "name": "Lighthearted Clue"
+    },
+    {
+      "ship_count": 20,
+      "x": 31.25,
+      "y": 22.5,
+      "owner": null,
+      "name": "Steel Tie"
+    },
+    {
+      "ship_count": 20,
+      "x": 43.75,
+      "y": 22.5,
+      "owner": null,
+      "name": "Velvety Bonus"
+    },
+    {
+      "ship_count": 20,
+      "x": 5.0,
+      "y": 25.0,
+      "owner": null,
+      "name": "Complex Time"
+    },
+    {
+      "ship_count": 20,
+      "x": 17.5,
+      "y": 25.0,
+      "owner": null,
+      "name": "Peaceful Place"
+    },
+    {
+      "ship_count": 20,
+      "x": 27.5,
+      "y": 25.0,
+      "owner": null,
+      "name": "Failing Public"
+    },
+    {
+      "ship_count": 20,
+      "x": 42.5,
+      "y": 25.0,
+      "owner": null,
+      "name": "Low Wear"
+    },
+    {
+      "ship_count": 20,
+      "x": 45.0,
+      "y": 25.0,
+      "owner": null,
+      "name": "Impish Rent"
+    },
+    {
+      "ship_count": 20,
+      "x": 23.75,
+      "y": 27.5,
+      "owner": null,
+      "name": "Same Sector"
+    },
+    {
+      "ship_count": 20,
+      "x": 26.25,
+      "y": 27.5,
+      "owner": null,
+      "name": "Adventurous Scheme"
+    },
+    {
+      "ship_count": 20,
+      "x": 28.75,
+      "y": 27.5,
+      "owner": null,
+      "name": "Surprised Grandfather"
+    },
+    {
+      "ship_count": 20,
+      "x": 33.75,
+      "y": 27.5,
+      "owner": null,
+      "name": "Fitting Brave"
+    },
+    {
+      "ship_count": 20,
+      "x": 43.75,
+      "y": 27.5,
+      "owner": null,
+      "name": "Elementary Support"
+    },
+    {
+      "ship_count": 20,
+      "x": 12.5,
+      "y": 30.0,
+      "owner": null,
+      "name": "Old Energy"
+    },
+    {
+      "ship_count": 20,
+      "x": 20.0,
+      "y": 30.0,
+      "owner": null,
+      "name": "Athletic Cause"
+    },
+    {
+      "ship_count": 20,
+      "x": 25.0,
+      "y": 30.0,
+      "owner": null,
+      "name": "Realistic Change"
+    },
+    {
+      "ship_count": 20,
+      "x": 11.25,
+      "y": 32.5,
+      "owner": null,
+      "name": "Partial Pay"
+    },
+    {
+      "ship_count": 20,
+      "x": 13.75,
+      "y": 32.5,
+      "owner": null,
+      "name": "Spry Fold"
+    },
+    {
+      "ship_count": 20,
+      "x": 31.25,
+      "y": 32.5,
+      "owner": null,
+      "name": "Concerned Double"
+    },
+    {
+      "ship_count": 20,
+      "x": 36.25,
+      "y": 32.5,
+      "owner": null,
+      "name": "Wooden Pressure"
+    },
+    {
+      "ship_count": 20,
+      "x": 12.5,
+      "y": 35.0,
+      "owner": null,
+      "name": "Solid Cookie"
+    },
+    {
+      "ship_count": 20,
+      "x": 22.5,
+      "y": 35.0,
+      "owner": null,
+      "name": "Yellow Information"
+    },
+    {
+      "ship_count": 20,
+      "x": 27.5,
+      "y": 35.0,
+      "owner": null,
+      "name": "Fat Bird"
+    },
+    {
+      "ship_count": 20,
+      "x": 30.0,
+      "y": 35.0,
+      "owner": null,
+      "name": "Giving Habit"
+    },
+    {
+      "ship_count": 20,
+      "x": 32.5,
+      "y": 35.0,
+      "owner": null,
+      "name": "Separate Savings"
+    },
+    {
+      "ship_count": 20,
+      "x": 28.75,
+      "y": 37.5,
+      "owner": null,
+      "name": "Rubbery Bed"
+    },
+    {
+      "ship_count": 20,
+      "x": 38.75,
+      "y": 37.5,
+      "owner": null,
+      "name": "Delayed Watch"
+    },
+    {
+      "ship_count": 20,
+      "x": 43.75,
+      "y": 37.5,
+      "owner": null,
+      "name": "Petty Reference"
+    },
+    {
+      "ship_count": 20,
+      "x": 48.75,
+      "y": 37.5,
+      "owner": 2,
+      "name": "Previous Hide"
+    },
+    {
+      "ship_count": 20,
+      "x": 12.5,
+      "y": 40.0,
+      "owner": null,
+      "name": "Prime Disease"
+    },
+    {
+      "ship_count": 20,
+      "x": 25.0,
+      "y": 40.0,
+      "owner": null,
+      "name": "Thankful Brother"
+    },
+    {
+      "ship_count": 20,
+      "x": 11.25,
+      "y": 42.5,
+      "owner": null,
+      "name": "Vigorous Situation"
+    },
+    {
+      "ship_count": 20,
+      "x": 13.75,
+      "y": 42.5,
+      "owner": null,
+      "name": "Unlawful Stretch"
+    },
+    {
+      "ship_count": 20,
+      "x": 38.75,
+      "y": 42.5,
+      "owner": null,
+      "name": "Ashamed Crash"
+    },
+    {
+      "ship_count": 20,
+      "x": 48.75,
+      "y": 42.5,
+      "owner": 2,
+      "name": "Actual Handle"
+    },
+    {
+      "ship_count": 20,
+      "x": 12.5,
+      "y": 45.0,
+      "owner": null,
+      "name": "Forthright Series"
+    },
+    {
+      "ship_count": 20,
+      "x": 27.5,
+      "y": 45.0,
+      "owner": null,
+      "name": "Better Spring"
+    },
+    {
+      "ship_count": 20,
+      "x": 32.5,
+      "y": 45.0,
+      "owner": null,
+      "name": "Rocky Tank"
+    },
+    {
+      "ship_count": 20,
+      "x": 38.75,
+      "y": 47.5,
+      "owner": 2,
+      "name": "Handy Face"
+    },
+    {
+      "ship_count": 20,
+      "x": 43.75,
+      "y": 47.5,
+      "owner": 2,
+      "name": "Outstanding Mix"
+    },
+    {
+      "ship_count": 20,
+      "x": 48.75,
+      "y": 47.5,
+      "owner": 2,
+      "name": "Crushing Fruit"
+    }
+  ]
+}
