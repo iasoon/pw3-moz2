@@ -747,7 +747,7 @@ async fn main() {
     let game_server = GameServer::new();
 
     // TODO: can we run these on the same port? Would that be desirable?
-    tokio::spawn(game_server.run_ws_server("127.0.0.1:8080".to_string()));
+    tokio::spawn(game_server.run_ws_server("0.0.0.0:8080".to_string()));
 
     let game_manager = Arc::new(Mutex::new(GameManager {
         game_server,
@@ -846,5 +846,5 @@ async fn main() {
                               .or(get_match_route)
                               .or(websocket_route);
     
-    warp::serve(routes).run(([127, 0, 0, 1], 7412)).await;
+    warp::serve(routes).run(([0, 0, 0, 0], 7412)).await;
 }
