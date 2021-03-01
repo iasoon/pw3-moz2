@@ -1,19 +1,16 @@
 #![feature(async_closure)]
 
-use chrono::{DateTime, Utc};
-use mozaic_core::{EventBus, match_context::PlayerHandle, msg_stream::msg_stream};
-use planetwars::MatchConfig;
+use chrono::{Utc};
+use lobby_manager::*;
 use serde::{Deserialize, Serialize};
-
-use mozaic_core::client_manager::ClientHandle;
-use futures::{FutureExt, StreamExt, stream};
 
 mod planetwars;
 mod pw_maps;
+mod websocket;
+mod game_manager;
+mod lobby_manager;
 
-use mozaic_core::{Token, GameServer, MatchCtx};
-use mozaic_core::msg_stream::MsgStreamHandle;
-use tokio::sync::mpsc;
+use mozaic_core::{Token, GameServer};
 use uuid::Uuid;
 
 use warp::{Rejection, reply::{Reply, Response, json}};
@@ -23,110 +20,17 @@ use warp::Filter;
 use std::{convert::Infallible, path::Path, sync::{Arc, Mutex}};
 use std::collections::{HashMap, HashSet};
 
-mod websocket;
-
 use hex::FromHex;
-use rand::Rng;
+
+use game_manager::GameManager;
 
 const MAPS_DIRECTORY: &'static str = "maps";
-
-#[derive(Debug, Clone)]
-struct Player {
-    /// Scoped in lobby
-    id: usize,
-    name: String,
-    token: Token,
-    connection_count: usize,
-    client_connected: bool,
-}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct PlayerParams {
     name: String,
     #[serde(with = "hex")]
     token: Token,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct StrippedPlayer {
-    id: usize,
-    name: String,
-    connected: bool,
-    client_connected: bool,
-}
-
-pub struct GameManager {
-    game_server: GameServer,
-    matches: HashMap<String, MatchData>
-}
-
-pub struct MatchData {
-    log: MsgStreamHandle<String>,
-}
-
-impl GameManager {
-    fn create_match<F>(&mut self, tokens: Vec<Token>, match_config: MatchConfig, cb: F) -> String
-        where F: 'static + Send + Sync + FnOnce(String) -> ()
-    {
-        let clients = tokens.iter().map(|token| {
-            self.game_server.get_client(&token)
-        }).collect::<Vec<_>>();
-    
-        let match_id = gen_match_id();
-        let log = msg_stream();
-        self.matches.insert(match_id.clone(),
-            MatchData { log: log.clone() }
-        );
-        println!("Starting match {}", &match_id);
-        let cb_match_id = match_id.clone();
-        tokio::spawn(run_match(
-            clients,
-            self.game_server.clone(),
-            match_config,
-            log).map(|_| cb(cb_match_id))
-        );
-        return match_id;
-    }
-
-    fn list_matches(&self) -> Vec<String> {
-        self.matches.keys().cloned().collect()
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all="camelCase")]
-pub struct PwMapData {
-    pub name: String,
-    pub max_players: usize,
-}
-
-pub type PwMaps = HashMap<String, PwMapData>;
-
-#[derive(Clone, Debug)]
-pub struct Lobby {
-    id: String,
-    name: String,
-    public: bool,
-
-    next_player_id: usize,
-    // TODO: don't use strings for tokens
-    token_player: HashMap<Token, usize>,
-    players: HashMap<usize, Player>,
-
-    proposals: HashMap<String, Proposal>,
-    matches: HashMap<String, MatchMeta>,
-    // #[serde(with = "hex")]
-    lobby_token: Token,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct StrippedLobby {
-    id: String,
-    name: String,
-    public: bool,
-    players: HashMap<usize,StrippedPlayer>,
-    proposals: HashMap<String, Proposal>,
-    matches: HashMap<String, MatchMeta>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -140,135 +44,6 @@ pub struct MatchStartConfig {
     pub players: Vec<String>
 }
 
-impl From<LobbyConfig> for Lobby {
-    fn from(config: LobbyConfig) -> Lobby {
-        let id: [u8; 16] = rand::thread_rng().gen();
-        Lobby {
-            id: hex::encode(id),
-            name: config.name,
-            public: config.public,
-
-            next_player_id: 0,
-            players: HashMap::new(),
-            token_player: HashMap::new(),
-
-            lobby_token: rand::thread_rng().gen(),
-            proposals: HashMap::new(),
-            matches: HashMap::new(),
-        }
-    }
-}
-
-impl From<Lobby> for StrippedLobby {
-    fn from(lobby: Lobby) -> StrippedLobby {
-        StrippedLobby {
-            id: lobby.id,
-            name: lobby.name,
-            public: lobby.public,
-            players: lobby.players.iter().map(|(k,v)| (k.clone(),StrippedPlayer::from(v.clone()))).collect(),
-            proposals: lobby.proposals.clone(),
-            matches: lobby.matches.clone(),
-        }
-    }
-}
-
-impl From<Player> for StrippedPlayer {
-    fn from(player: Player) -> StrippedPlayer {
-        StrippedPlayer {
-            id: player.id,
-            name: player.name,
-            connected: player.connection_count > 0,
-            client_connected: player.client_connected,
-        }
-    }
-}
-
-pub struct LobbyManager {
-    game_manager: Arc<Mutex<GameManager>>,
-    lobbies: HashMap<String, Lobby>,
-    maps: Arc<PwMaps>,
-    websocket_connections: HashMap<String, Vec<WsConnection>>,
-    /// token -> {(lobby_id, player_id)}
-    token_player: HashMap<Token, HashSet<(String, usize)>>,
-}
-
-impl LobbyManager {
-    pub fn new(game_manager: Arc<Mutex<GameManager>>, maps: PwMaps) -> Self {
-        Self {
-            game_manager,
-            lobbies: HashMap::new(),
-            websocket_connections: HashMap::new(),
-            token_player: HashMap::new(),
-            maps: Arc::new(maps),
-        }
-    }
-
-    pub fn create_lobby(&mut self, config: LobbyConfig) -> Lobby {
-        let lobby: Lobby = config.into();
-        self.lobbies.insert(lobby.id.clone(), lobby.clone());
-        lobby
-    }
-
-    pub fn send_update(&mut self, lobby_id: &str, ev: LobbyEvent) {
-        let serialized = serde_json::to_string(&ev).unwrap();
-        if let Some(connections) = self.websocket_connections.get_mut(lobby_id) {
-            let mut i = 0;
-            while i < connections.len() {
-                if connections[i].send(serialized.clone()).is_ok() {
-                    i += 1;
-                } else {
-                    // connection dropped, remove it from the list
-                    connections.swap_remove(i);
-                }
-            }
-        }
-    }
-}
-
-fn set_client_connected(lobby_mgr: &Arc<Mutex<LobbyManager>>, token: &Token, value: bool) {
-    let mut mgr = lobby_mgr.lock().unwrap();
-    let token_players = match mgr.token_player.get(token) {
-        None => return,
-        Some(players) => players.clone(),
-    };
-    for (lobby_id, player_id) in token_players {
-        let updated = mgr.lobbies.get_mut(&lobby_id).and_then(|lobby| {
-            lobby.players.get_mut(&player_id).map(|player| {
-                player.client_connected = value;
-                StrippedPlayer::from(player.clone())
-            })
-        });
-        if let Some(player_data) = updated {
-            mgr.send_update(&lobby_id, LobbyEvent::PlayerData(player_data))
-        }
-    }
-}
-
-fn init_callbacks(mgr_ref: Arc<Mutex<LobbyManager>>) {
-    let mgr = mgr_ref.lock().unwrap();
-    let mut game_mgr = mgr.game_manager.lock().unwrap();
-    let client_mgr = game_mgr.game_server.client_manager_mut();
-    
-    let cloned_ref = mgr_ref.clone();
-    client_mgr.on_connect(Box::new(move |token|
-        set_client_connected(&cloned_ref, token, true)));
-    let cloned_ref = mgr_ref.clone();
-    client_mgr.on_disconnect(Box::new(move |token|
-        set_client_connected(&cloned_ref, token, false)));
-}
-
-struct WsConnection {
-    #[warn(dead_code)]
-    _conn_id: usize,
-    tx: mpsc::UnboundedSender<String>,
-}
-
-impl WsConnection {
-    pub fn send(&mut self, msg: String) -> Result<(), ()> {
-        self.tx.send(msg).map_err(|_| ())
-    }
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all="camelCase")]
 struct ProposalParams {
@@ -276,96 +51,6 @@ struct ProposalParams {
     players: Vec<usize>
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Proposal {
-    id: String,
-    owner_id: usize,
-    config: planetwars::MatchConfig,
-    players: Vec<ProposalPlayer>,
-    #[serde(flatten)]
-    status: ProposalStatus,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct ProposalPlayer {
-    player_id: usize,
-    status: AcceptedState,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-enum AcceptedState {
-    Unanswered,
-    Accepted,
-    Rejected,
-}
-
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[serde(rename_all="camelCase")]
-#[serde(tag="status")]
-enum ProposalStatus {
-    Pending,
-    Denied,
-    Accepted { match_id: String },
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-#[serde(rename_all="camelCase")]
-enum MatchStatus {
-    Playing,
-    Done,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct MatchMeta {
-    id: String,
-    timestamp: DateTime<Utc>,
-    config: planetwars::MatchConfig,
-    // TODO: this should maybe be a hashmap for the more general case
-    players: Vec<usize>,
-    status: MatchStatus,
-}
-
-// TODO
-#[derive(Serialize, Deserialize)]
-#[serde(tag="type", content = "data")]
-#[serde(rename_all="camelCase")]
-pub enum LobbyEvent {
-    LobbyState(StrippedLobby),
-    PlayerData(StrippedPlayer),
-    ProposalData(Proposal),
-    MatchData(MatchMeta),
-    // Ugly, quickly, dirty, but effective
-    MatchLogEvent(MatchLogEvent),
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all="camelCase")]
-pub struct MatchLogEvent {
-    pub stream_id: usize,
-    pub event: String,
-}
-
-async fn run_match(
-    mut clients: Vec<ClientHandle>,
-    serv: GameServer,
-    config: planetwars::MatchConfig,
-    log: MsgStreamHandle<String>)
-{
-    let event_bus = Arc::new(Mutex::new(EventBus::new()));
-    let players = stream::iter(clients.iter_mut().enumerate())
-        .then(|(i, client)| {
-            let player_token: Token = rand::thread_rng().gen();
-            let player_id = (i+1) as u32;
-            let player = serv.conn_table().open_connection(player_token, player_id, event_bus.clone());
-            client.run_player(player_token).map(move |_| (player_id, Box::new(player) as Box<dyn PlayerHandle>))
-        }).collect().await;
-    
-    let match_ctx = MatchCtx::new(event_bus, players, log);
-    let pw_match = planetwars::PwMatch::create(match_ctx, config);
-    pw_match.run().await;
-    println!("match done");
-}
 
 fn with_game_manager(
     game_manager: Arc<Mutex<GameManager>>,
@@ -387,18 +72,13 @@ fn create_lobby(
 ) -> impl Reply {
     let mut manager = mgr.lock().unwrap();
     let lobby = manager.create_lobby(lobby_config);
-    json(&StrippedLobby::from(lobby.clone()))
+    json(&LobbyData::from(lobby.clone()))
 }
 
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct AcceptParams {
     status: AcceptedState,
-}
-
-fn gen_match_id() -> String {
-    let id: [u8; 16] = rand::random();
-    hex::encode(&id)
 }
 
 fn list_matches(
@@ -527,7 +207,7 @@ fn lobby_context<MountPoint>(
 
 fn get_lobby_by_id(req: LobbyRequestCtx) -> Response {
     let res = req.with_lobby(|lobby| {
-        Ok(json(&StrippedLobby::from(lobby.clone())))
+        Ok(json(&LobbyData::from(lobby.clone())))
     });
     return result_to_response(res)
 }
@@ -754,8 +434,7 @@ async fn main() {
         matches: HashMap::new(),
     }));
 
-    let lobby_manager = Arc::new(Mutex::new(LobbyManager::new(game_manager.clone(), maps)));
-    init_callbacks(lobby_manager.clone());
+    let lobby_manager = LobbyManager::create(game_manager.clone(), maps);
 
     // POST /lobbies
     let post_lobbies_route = warp::path!("lobbies")

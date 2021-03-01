@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 
-use crate::{LobbyEvent, LobbyManager, MatchLogEvent, StrippedLobby, StrippedPlayer, WsConnection};
+use crate::{LobbyEvent, LobbyManager, MatchLogEvent, LobbyData, StrippedPlayer};
 use futures::{StreamExt, future};
 use futures::FutureExt;
 use mozaic_core::Token;
@@ -9,6 +9,17 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use warp::ws::WebSocket;
 
+pub struct WsConnection {
+    #[warn(dead_code)]
+    _conn_id: usize,
+    tx: mpsc::UnboundedSender<String>,
+}
+
+impl WsConnection {
+    pub fn send(&mut self, msg: String) -> Result<(), ()> {
+        self.tx.send(msg).map_err(|_| ())
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -70,7 +81,7 @@ impl ConnectionHandler {
                 None => return,
                 Some(lobby) => lobby,
             };
-            StrippedLobby::from(lobby.clone())
+            LobbyData::from(lobby.clone())
         };
 
 
