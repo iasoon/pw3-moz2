@@ -26,31 +26,6 @@ use game_manager::GameManager;
 
 const MAPS_DIRECTORY: &'static str = "maps";
 
-#[derive(Serialize, Deserialize, Debug)]
-struct PlayerParams {
-    name: String,
-    #[serde(with = "hex")]
-    token: Token,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct LobbyConfig {
-    pub name: String,
-    pub public: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct MatchStartConfig {
-    pub players: Vec<String>
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all="camelCase")]
-struct ProposalParams {
-    config: planetwars::MatchConfig,
-    players: Vec<usize>
-}
-
 
 fn with_game_manager(
     game_manager: Arc<Mutex<GameManager>>,
@@ -66,6 +41,12 @@ fn with_lobby_manager(
     warp::any().map(move || lobby_manager.clone())
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct LobbyConfig {
+    pub name: String,
+    pub public: bool,
+}
+
 fn create_lobby(
     mgr: Arc<Mutex<LobbyManager>>,
     lobby_config: LobbyConfig,
@@ -75,11 +56,6 @@ fn create_lobby(
     json(&LobbyData::from(lobby.clone()))
 }
 
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct AcceptParams {
-    status: AcceptedState,
-}
 
 fn list_matches(
     mgr: Arc<Mutex<GameManager>>
@@ -212,7 +188,12 @@ fn get_lobby_by_id(req: LobbyRequestCtx) -> Response {
     return result_to_response(res)
 }
 
-
+#[derive(Serialize, Deserialize, Debug)]
+struct PlayerParams {
+    name: String,
+    #[serde(with = "hex")]
+    token: Token,
+}
 
 fn join_lobby(req: LobbyRequestCtx, player_params: PlayerParams)
     -> Response
@@ -258,6 +239,14 @@ fn join_lobby(req: LobbyRequestCtx, player_params: PlayerParams)
 }
 
 const MAX_TURNS_ALLOWED: usize = 500;
+
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all="camelCase")]
+struct ProposalParams {
+    config: planetwars::MatchConfig,
+    players: Vec<usize>
+}
 
 fn create_proposal(req: LobbyRequestCtx, params: ProposalParams)
     -> Response
@@ -379,6 +368,11 @@ fn start_proposal(req: LobbyRequestCtx, proposal_id: String) -> Response {
     }
 
     return json_response(res);
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct AcceptParams {
+    status: AcceptedState,
 }
 
 fn accept_proposal(
