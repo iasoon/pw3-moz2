@@ -393,10 +393,9 @@ fn accept_proposal(
             }
         }
 
-        match params.status {
-            AcceptedState::Rejected => proposal.status = ProposalStatus::Denied,
-            _ => (),
-        };
+        if proposal.players.iter().any(|p| p.status == AcceptedState::Rejected) {
+            proposal.status = ProposalStatus::Denied;
+        }
 
         Ok(proposal.clone())
     });
