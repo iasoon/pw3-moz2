@@ -102,7 +102,7 @@ impl ConnectionHandler {
     fn subscribe_to_match(&mut self, req: SubscribeToMatch) {
         let lobby_mgr = self.mgr.lock().unwrap();
         let game_mgr = lobby_mgr.game_manager.lock().unwrap();
-        if let Some(match_data) = game_mgr.matches.get(&req.match_id) {
+        if let Some(match_data) = game_mgr.get_match_data(&req.match_id) {
             let tx = self.tx.clone();
             let task = match_data.log.reader().for_each(move |log_entry| {
                 let event= LobbyEvent::MatchLogEvent(MatchLogEvent {

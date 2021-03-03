@@ -74,7 +74,7 @@ fn set_client_connected(lobby_mgr: &Arc<Mutex<LobbyManager>>, token: &Token, val
 fn init_callbacks(mgr_ref: Arc<Mutex<LobbyManager>>) {
     let mgr = mgr_ref.lock().unwrap();
     let mut game_mgr = mgr.game_manager.lock().unwrap();
-    let client_mgr = game_mgr.game_server.client_manager_mut();
+    let client_mgr = game_mgr.client_manager_mut();
     
     let cloned_ref = mgr_ref.clone();
     client_mgr.on_connect(Box::new(move |token|

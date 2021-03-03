@@ -2,17 +2,30 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use futures::{FutureExt, StreamExt, stream};
-use mozaic_core::{EventBus, GameServer, MatchCtx, MsgStreamHandle, Token, client_manager::ClientHandle, match_context::PlayerHandle, msg_stream::msg_stream};
+use mozaic_core::{EventBus, GameServer, MatchCtx, MsgStreamHandle, Token, client_manager::{ClientHandle, ClientMgrHandle}, match_context::PlayerHandle, msg_stream::msg_stream};
 use rand::Rng;
 
 use crate::{planetwars::{self, MatchConfig}};
 
 pub struct GameManager {
-    pub game_server: GameServer,
-    pub matches: HashMap<String, MatchData>
+    game_server: GameServer,
+    matches: HashMap<String, MatchData>
 }
 
 impl GameManager {
+    pub fn init(addr: String) -> Arc<Mutex<GameManager>> {
+        let game_server = GameServer::new();
+
+        tokio::spawn(game_server.run_ws_server(addr));
+
+        let game_manager = GameManager {
+            game_server,
+            matches: HashMap::new(),
+        };
+
+        return Arc::new(Mutex::new(game_manager));
+    }
+
     pub fn create_match<F>(&mut self, tokens: Vec<Token>, match_config: MatchConfig, cb: F) -> String
         where F: 'static + Send + Sync + FnOnce(String) -> ()
     {
@@ -36,8 +49,21 @@ impl GameManager {
         return match_id;
     }
 
+    pub fn get_match_data<'a>(&'a self, match_id: &str) -> Option<&'a MatchData> {
+        self.matches.get(match_id)
+    }
+
     pub fn list_matches(&self) -> Vec<String> {
         self.matches.keys().cloned().collect()
+    }
+
+    // TODO: find a cleaner way
+    pub fn client_manager_mut(&mut self) -> &mut ClientMgrHandle {
+        self.game_server.client_manager_mut()
+    }
+
+    pub fn client_connected(&self, token: &Token) -> bool {
+        self.game_server.client_manager().is_connected(token)
     }
 }
 

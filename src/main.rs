@@ -71,7 +71,7 @@ fn get_match_log(
 ) -> warp::reply::Response
 {
     let manager = mgr.lock().unwrap();
-    match manager.matches.get(&match_id) {
+    match manager.get_match_data(&match_id) {
         None => warp::http::StatusCode::NOT_FOUND.into_response(),
         Some(m) => {
             let log = m.log.to_vec().into_iter().map(|e| {
@@ -216,9 +216,7 @@ fn join_lobby(req: LobbyRequestCtx, player_params: PlayerParams)
             client_connected: game_manager
                 .lock()
                 .unwrap()
-                .game_server
-                .client_manager()
-                .is_connected(&player_params.token)
+                .client_connected(&player_params.token)
         };
         lobby.token_player.insert(player.token.clone(), player_id);
         lobby.players.insert(player_id, player.clone());
@@ -248,31 +246,37 @@ struct ProposalParams {
     players: Vec<usize>
 }
 
+fn validate_proposal_params(maps: &PwMaps, params: &ProposalParams) -> LobbyApiResult<()> {
+    if params.config.max_turns > MAX_TURNS_ALLOWED {
+        return Err(LobbyApiError::InvalidProposalParams(
+            format!("max allowed turns is {}", MAX_TURNS_ALLOWED))
+        );
+    }
+
+    let map_data = maps.get(&params.config.map_name)
+        .ok_or_else(|| LobbyApiError::InvalidProposalParams(
+            "map does not exist".to_string()
+        ))?;
+    
+    if params.players.len() > map_data.max_players {
+        return Err(LobbyApiError::InvalidProposalParams(
+            format!("too many players")
+        ));
+    }
+
+    Ok(())
+}
+
 fn create_proposal(req: LobbyRequestCtx, params: ProposalParams)
     -> Response
 {
     let auth = &req.auth_header;
     let maps = req.lobby_mgr.lock().unwrap().maps.clone();
     let res = req.with_lobby(|lobby| {
+        validate_proposal_params(maps.as_ref(), &params)?;
+
         let player_id = auth_player(auth, lobby)
             .ok_or(LobbyApiError::NotAuthenticated)?;
-
-        if params.config.max_turns > MAX_TURNS_ALLOWED {
-            return Err(LobbyApiError::InvalidProposalParams(
-                format!("max allowed turns is {}", MAX_TURNS_ALLOWED))
-            );
-        }
-
-        let map_data = maps.get(&params.config.map_name)
-            .ok_or_else(|| LobbyApiError::InvalidProposalParams(
-                "map does not exist".to_string()
-            ))?;
-        
-        if params.players.len() > map_data.max_players {
-            return Err(LobbyApiError::InvalidProposalParams(
-                format!("too many players")
-            ));
-        }
 
         let proposal = Proposal {
             owner_id: player_id,
@@ -417,16 +421,7 @@ fn get_maps(mgr: Arc<Mutex<LobbyManager>>) -> impl Reply {
 async fn main() {
     let maps = pw_maps::build_map_index(Path::new(MAPS_DIRECTORY))
         .expect("failed to read maps");
-    let game_server = GameServer::new();
-
-    // TODO: can we run these on the same port? Would that be desirable?
-    tokio::spawn(game_server.run_ws_server("0.0.0.0:8080".to_string()));
-
-    let game_manager = Arc::new(Mutex::new(GameManager {
-        game_server,
-        matches: HashMap::new(),
-    }));
-
+    let game_manager = GameManager::init("0.0.0.0:8080".to_string());
     let lobby_manager = LobbyManager::create(game_manager.clone(), maps);
 
     // POST /lobbies
