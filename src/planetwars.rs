@@ -59,7 +59,6 @@ impl PwMatch {
             // Log state
             let state = self.match_state.serialize_state();
             self.match_ctx.emit(serde_json::to_string(&state).unwrap());
-            sleep(Duration::from_millis(1000)).await;
         }
     }
 
