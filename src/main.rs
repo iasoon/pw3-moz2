@@ -275,16 +275,22 @@ fn create_proposal(req: LobbyRequestCtx, params: ProposalParams)
     let res = req.with_lobby(|lobby| {
         validate_proposal_params(maps.as_ref(), &params)?;
 
-        let player_id = auth_player(auth, lobby)
+        let creator_id = auth_player(auth, lobby)
             .ok_or(LobbyApiError::NotAuthenticated)?;
 
         let proposal = Proposal {
-            owner_id: player_id,
+            owner_id: creator_id,
             config: params.config,
             players: params.players.iter().map(|&player_id| {
+                let status = if player_id == creator_id {
+                    AcceptedState::Accepted
+                } else {
+                    AcceptedState::Unanswered
+                };
+
                 ProposalPlayer {
                     player_id,
-                    status: AcceptedState::Unanswered
+                    status,
                 }
             }).collect(),
             id: Uuid::new_v4().to_hyphenated().to_string(),
@@ -335,6 +341,7 @@ fn start_proposal(req: LobbyRequestCtx, proposal_id: String) -> Response {
 
             tokens.push(player.token);
         }
+
         let match_config = proposal.config.clone();
 
         let cb_mgr = manager.clone();
