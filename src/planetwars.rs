@@ -1,7 +1,7 @@
 use futures::stream::futures_unordered::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use mozaic_core::match_context::{MatchCtx, RequestResult};
-use tokio::time::{Duration, sleep};
+use tokio::time::Duration;
 use serde::{Serialize, Deserialize};
 
 use serde_json;

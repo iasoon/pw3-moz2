@@ -10,7 +10,7 @@ mod websocket;
 mod game_manager;
 mod lobby_manager;
 
-use mozaic_core::{Token, GameServer};
+use mozaic_core::{Token};
 use uuid::Uuid;
 
 use warp::{Rejection, reply::{Reply, Response, json}};
@@ -18,7 +18,7 @@ use warp::Filter;
 
 
 use std::{convert::Infallible, path::Path, sync::{Arc, Mutex}};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use hex::FromHex;
 
@@ -86,6 +86,7 @@ enum LobbyApiError {
     LobbyNotFound,
     NotAuthenticated,
     NotAuthorized,
+    NameTaken,
     InvalidProposalParams(String),
     ProposalNotFound,
     ProposalExpired,
@@ -102,6 +103,10 @@ fn result_to_response<T>(result: LobbyApiResult<T>) -> Response
         Err(LobbyApiError::LobbyNotFound) => warp::http::StatusCode::NOT_FOUND.into_response(),
         Err(LobbyApiError::NotAuthenticated) => warp::http::StatusCode::BAD_REQUEST.into_response(),
         Err(LobbyApiError::NotAuthorized) => warp::http::StatusCode::UNAUTHORIZED.into_response(),
+        Err(LobbyApiError::NameTaken) => warp::reply::with_status(
+            "name is not available",
+            warp::http::StatusCode::BAD_REQUEST,
+        ).into_response(),
         Err(LobbyApiError::InvalidProposalParams(msg)) => warp::reply::with_status(
             msg,
             warp::http::StatusCode::BAD_REQUEST
@@ -202,6 +207,18 @@ fn join_lobby(req: LobbyRequestCtx, player_params: PlayerParams)
     // TODO: check for uniqueness of name and token
     let game_manager = req.lobby_mgr.lock().unwrap().game_manager.clone();
     let res = req.with_lobby(|lobby| {
+        // whether the player sending the request already has this name
+        let owns_name = lobby.token_player
+            .get(&player_params.token)
+            .map(|player_id| lobby.players[player_id].name == player_params.name)
+            .unwrap_or(false);
+
+        // is the requested name available?
+        let taken_names: HashSet<&str> = lobby.players.values().map(|player| player.name.as_str()).collect();
+        if taken_names.contains(player_params.name.as_str()) && !owns_name {
+            return Err(LobbyApiError::NameTaken);
+        }
+
         let player_id = lobby.token_player.get(&player_params.token).cloned().unwrap_or_else(|| {
             let id = lobby.next_player_id;
             lobby.next_player_id += 1;
