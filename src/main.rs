@@ -22,7 +22,7 @@ use std::collections::HashSet;
 
 use hex::FromHex;
 
-use game_manager::GameManager;
+use game_manager::{GameManager, MatchData, create_match, read_match_log_from_disk};
 
 const MAPS_DIRECTORY: &'static str = "maps";
 
@@ -72,15 +72,19 @@ fn get_match_log(
 {
     let manager = mgr.lock().unwrap();
     match manager.get_match_data(&match_id) {
-        None => warp::http::StatusCode::NOT_FOUND.into_response(),
-        Some(m) => {
-            let log = m.log.to_vec().into_iter().map(|e| {
-                e.as_ref().to_string()
-            }).collect::<Vec<_>>();
-            json(&log).into_response()
+        Some(MatchData::Finished { log_path }) => {
+            match read_match_log_from_disk(log_path) {
+                Ok(log) => json(&log).into_response(),
+                Err(err) => warp::reply::with_status(
+                    err.to_string(),
+                    warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                ).into_response()
+            }
         }
+        _ => warp::http::StatusCode::NOT_FOUND.into_response(),
     }
 }
+
 
 enum LobbyApiError {
     LobbyNotFound,
@@ -363,8 +367,7 @@ fn start_proposal(req: LobbyRequestCtx, proposal_id: String) -> Response {
 
         let cb_mgr = manager.clone();
         let cb_lobby_id = lobby.id.clone();
-        let match_id = game_manager.lock().unwrap().create_match(tokens, match_config.clone(), move |match_id| {
-            println!("completed match {}", &match_id);
+        let match_id = create_match(game_manager, tokens, match_config.clone(), move |match_id| {
             let mut mgr = cb_mgr.lock().unwrap();
             mgr.lobbies.get_mut(&cb_lobby_id).and_then(|lobby| {
                 if let Some(match_meta) = lobby.matches.get_mut(&match_id) {

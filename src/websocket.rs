@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 
-use crate::{LobbyEvent, LobbyManager, MatchLogEvent, LobbyData, StrippedPlayer};
+use crate::{LobbyData, LobbyEvent, LobbyManager, MatchLogEvent, StrippedPlayer, game_manager::MatchData};
 use futures::{StreamExt, future};
 use futures::FutureExt;
 use mozaic_core::Token;
@@ -102,9 +102,10 @@ impl ConnectionHandler {
     fn subscribe_to_match(&mut self, req: SubscribeToMatch) {
         let lobby_mgr = self.mgr.lock().unwrap();
         let game_mgr = lobby_mgr.game_manager.lock().unwrap();
-        if let Some(match_data) = game_mgr.get_match_data(&req.match_id) {
+        // TODO: what if this does not match? Should a completed match log be translated back?
+        if let Some(MatchData::InProgress { log_stream }) = game_mgr.get_match_data(&req.match_id) {
             let tx = self.tx.clone();
-            let task = match_data.log.reader().for_each(move |log_entry| {
+            let task = log_stream.reader().for_each(move |log_entry| {
                 let event= LobbyEvent::MatchLogEvent(MatchLogEvent {
                     stream_id: req.stream_id,
                     event: log_entry.as_ref().clone(),

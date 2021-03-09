@@ -1,11 +1,14 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fs::File, io::{self, Write}, path::{Path, PathBuf}};
 use std::sync::{Arc, Mutex};
 
 use futures::{FutureExt, StreamExt, stream};
+use io::{BufRead, BufReader};
 use mozaic_core::{EventBus, GameServer, MatchCtx, MsgStreamHandle, Token, client_manager::{ClientHandle, ClientMgrHandle}, match_context::PlayerHandle, msg_stream::msg_stream};
 use rand::Rng;
 
 use crate::{planetwars::{self, MatchConfig}};
+
+const MATCHES_DIRECTORY: &'static str = "matches";
 
 pub struct GameManager {
     game_server: GameServer,
@@ -26,29 +29,6 @@ impl GameManager {
         return Arc::new(Mutex::new(game_manager));
     }
 
-    pub fn create_match<F>(&mut self, tokens: Vec<Token>, match_config: MatchConfig, cb: F) -> String
-        where F: 'static + Send + Sync + FnOnce(String) -> ()
-    {
-        let clients = tokens.iter().map(|token| {
-            self.game_server.get_client(&token)
-        }).collect::<Vec<_>>();
-    
-        let match_id = gen_match_id();
-        let log = msg_stream();
-        self.matches.insert(match_id.clone(),
-            MatchData { log: log.clone() }
-        );
-        println!("Starting match {}", &match_id);
-        let cb_match_id = match_id.clone();
-        tokio::spawn(run_match(
-            clients,
-            self.game_server.clone(),
-            match_config,
-            log).map(|_| cb(cb_match_id))
-        );
-        return match_id;
-    }
-
     pub fn get_match_data<'a>(&'a self, match_id: &str) -> Option<&'a MatchData> {
         self.matches.get(match_id)
     }
@@ -66,10 +46,15 @@ impl GameManager {
         self.game_server.client_manager().is_connected(token)
     }
 }
-
-pub struct MatchData {
-    pub log: MsgStreamHandle<String>,
+pub enum MatchData {
+    InProgress {
+        log_stream: MsgStreamHandle<String>
+    },
+    Finished {
+        log_path: PathBuf
+    },
 }
+
 
 fn gen_match_id() -> String {
     let id: [u8; 16] = rand::random();
@@ -95,4 +80,79 @@ async fn run_match(
     let pw_match = planetwars::PwMatch::create(match_ctx, config);
     pw_match.run().await;
     println!("match done");
+}
+
+// TODO: this function is very weird.
+pub fn create_match<F>(
+    game_mgr: Arc<Mutex<GameManager>>,
+    tokens: Vec<Token>,
+    match_config: MatchConfig,
+    callback: F
+) -> String
+    where F: 'static + Send + Sync + FnOnce(String) -> ()
+{
+    let mut mgr = game_mgr.lock().unwrap();
+
+    let clients = tokens.iter().map(|token| {
+        mgr.game_server.get_client(&token)
+    }).collect::<Vec<_>>();
+
+    let match_id = gen_match_id();
+    let log = msg_stream();
+    mgr.matches.insert(match_id.clone(),
+        MatchData::InProgress { log_stream: log.clone() }
+    );
+
+    println!("Starting match {}", &match_id);
+
+    let cb_match_id = match_id.clone();
+    let cb_game_mgr = game_mgr.clone();
+    tokio::spawn(run_match(
+        clients,
+        mgr.game_server.clone(),
+        match_config,
+        log.clone()).map(move |_| {
+            let log_path = match_file_path(&cb_match_id);
+            let res = write_match_to_disk(&log_path, log);
+            if let Err(err) = res {
+                eprint!("write match {} failed: {}", cb_match_id, err);
+            }
+            cb_game_mgr.lock()
+                .unwrap()
+                .matches
+                .insert(cb_match_id.clone(), MatchData::Finished { log_path });
+            println!("Finished match {}", &cb_match_id);
+            callback(cb_match_id);
+        })
+    );
+    return match_id;
+}
+
+
+pub fn match_file_path(match_id: &str) -> PathBuf {
+    let mut path_buf = PathBuf::new();
+    path_buf.push(MATCHES_DIRECTORY);
+    path_buf.push(match_id);
+    path_buf.set_extension("jsonl");
+    return path_buf;
+}
+
+pub fn write_match_to_disk(path: &Path, log: MsgStreamHandle<String>) -> io::Result<()> {
+    let entries = log.to_vec();
+    let mut file = File::create(path)?;
+    for log_entry in entries {
+        file.write_all(log_entry.as_bytes())?;
+        file.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+pub fn read_match_log_from_disk(path: &Path) -> io::Result<Vec<String>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut log = Vec::new();
+    for line in reader.lines() {
+        log.push(line?);
+    }
+    Ok(log)
 }
