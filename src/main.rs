@@ -398,7 +398,7 @@ fn start_proposal(req: LobbyRequestCtx, proposal_id: String) -> Response {
         req.broadcast_event(LobbyEvent::MatchData(match_meta.clone()));
     }
 
-    return json_response(res);
+    return json_response(res.map(|(proposal, _match)| proposal));
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
