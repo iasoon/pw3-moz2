@@ -79,7 +79,6 @@ async fn run_match(
     let match_ctx = MatchCtx::new(event_bus, players, log);
     let pw_match = planetwars::PwMatch::create(match_ctx, config);
     pw_match.run().await;
-    println!("match done");
 }
 
 // TODO: this function is very weird.
@@ -98,7 +97,7 @@ pub fn create_match<F>(
     }).collect::<Vec<_>>();
 
     let match_id = gen_match_id();
-    let log = msg_stream();
+    let mut log = msg_stream();
     mgr.matches.insert(match_id.clone(),
         MatchData::InProgress { log_stream: log.clone() }
     );
@@ -112,6 +111,7 @@ pub fn create_match<F>(
         mgr.game_server.clone(),
         match_config,
         log.clone()).map(move |_| {
+            log.terminate();
             let log_path = match_file_path(&cb_match_id);
             let res = write_match_to_disk(&log_path, log);
             if let Err(err) = res {
