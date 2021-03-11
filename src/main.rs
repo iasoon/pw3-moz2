@@ -389,7 +389,15 @@ fn start_proposal(req: LobbyRequestCtx, proposal_id: String) -> Response {
         };
         lobby.matches.insert(match_meta.id.clone(), match_meta.clone());
         proposal.status = ProposalStatus::Accepted { match_id };
-        Ok((proposal.clone(), match_meta))
+
+        // TODO: below code is a bit backwards
+
+        // take ownership of the data
+        let proposal = proposal.clone();
+        // the proposal is no longer open; remove it
+        lobby.proposals.remove(&proposal.id);
+
+        Ok((proposal, match_meta))
     });
 
     if let Ok((proposal, match_meta)) = &res {
@@ -414,10 +422,10 @@ fn accept_proposal(
     let res = req.with_lobby(|lobby| {
         let player_id = auth_player(&req.auth_header, lobby)
             .ok_or(LobbyApiError::NotAuthenticated)?;
-
-        let proposal = lobby.proposals.get_mut(&proposal_id)
-            .ok_or(LobbyApiError::ProposalNotFound)?;
         
+        let proposal = lobby.proposals.get_mut(&proposal_id)
+        .ok_or(LobbyApiError::ProposalNotFound)?;
+    
         for player in proposal.players.iter_mut() {
             if player.player_id == player_id {
                 player.status = params.status.clone();
@@ -426,6 +434,14 @@ fn accept_proposal(
 
         if proposal.players.iter().any(|p| p.status == AcceptedState::Rejected) {
             proposal.status = ProposalStatus::Denied;
+        }
+
+        // take ownership of proposal data
+        let proposal = proposal.clone();
+
+        // this proposal is no longer relevant; discard it.
+        if proposal.status == ProposalStatus::Denied {
+            lobby.proposals.remove(&proposal.id);
         }
 
         Ok(proposal.clone())
