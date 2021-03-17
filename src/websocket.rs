@@ -159,7 +159,12 @@ impl ConnectionHandler {
                 None => continue,
                 Some(lobby) => {
                     lobby.players.get_mut(&player_id).and_then(|player| {
-                        player.connection_count -= 1;
+                        // It should not happen that this condition is false, but it does,
+                        // and it crashes the server. Please help.
+                        if player.connection_count > 0 {
+                            player.connection_count -= 1;
+                        }
+
                         if player.connection_count == 0 {
                             // update required
                             Some(StrippedPlayer::from(player.clone()))
