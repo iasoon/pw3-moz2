@@ -62,7 +62,7 @@ fn set_client_connected(lobby_mgr: &Arc<Mutex<LobbyManager>>, token: &Token, val
         let updated = mgr.lobbies.get_mut(&lobby_id).and_then(|lobby| {
             lobby.players.get_mut(&player_id).map(|player| {
                 player.client_connected = value;
-                StrippedPlayer::from(player.clone())
+                PlayerData::from(player.clone())
             })
         });
         if let Some(player_data) = updated {
@@ -173,7 +173,7 @@ pub struct MatchMeta {
 
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct StrippedPlayer {
+pub struct PlayerData {
     pub id: usize,
     pub name: String,
     pub connected: bool,
@@ -187,7 +187,7 @@ pub struct LobbyData {
     pub id: String,
     pub name: String,
     pub public: bool,
-    pub players: HashMap<usize,StrippedPlayer>,
+    pub players: HashMap<usize,PlayerData>,
     pub proposals: HashMap<String, Proposal>,
     pub matches: HashMap<String, MatchMeta>,
 }
@@ -219,16 +219,16 @@ impl From<Lobby> for LobbyData {
             id: lobby.id,
             name: lobby.name,
             public: lobby.public,
-            players: lobby.players.iter().map(|(k,v)| (k.clone(),StrippedPlayer::from(v.clone()))).collect(),
+            players: lobby.players.iter().map(|(k,v)| (k.clone(),PlayerData::from(v.clone()))).collect(),
             proposals: lobby.proposals.clone(),
             matches: lobby.matches.clone(),
         }
     }
 }
 
-impl From<Player> for StrippedPlayer {
-    fn from(player: Player) -> StrippedPlayer {
-        StrippedPlayer {
+impl From<Player> for PlayerData {
+    fn from(player: Player) -> PlayerData {
+        PlayerData {
             id: player.id,
             name: player.name,
             connected: player.connection_count > 0,
@@ -243,7 +243,7 @@ impl From<Player> for StrippedPlayer {
 #[serde(rename_all="camelCase")]
 pub enum LobbyEvent {
     LobbyState(LobbyData),
-    PlayerData(StrippedPlayer),
+    PlayerData(PlayerData),
     ProposalData(Proposal),
     MatchData(MatchMeta),
     // Ugly, quickly, dirty, but effective

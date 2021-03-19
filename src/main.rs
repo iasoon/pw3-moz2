@@ -241,7 +241,7 @@ fn join_lobby(req: LobbyRequestCtx, player_params: PlayerParams)
         };
         lobby.token_player.insert(player.token.clone(), player_id);
         lobby.players.insert(player_id, player.clone());
-        Ok(StrippedPlayer::from(player))
+        Ok(PlayerData::from(player))
     });
     if let Ok(player_data) = &res {
         req.broadcast_event(LobbyEvent::PlayerData(player_data.clone()));

@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 
-use crate::{LobbyData, LobbyEvent, LobbyManager, MatchLogEvent, StrippedPlayer, game_manager::MatchData};
+use crate::{LobbyData, LobbyEvent, LobbyManager, MatchLogEvent, PlayerData, game_manager::MatchData};
 use futures::{StreamExt, future};
 use futures::FutureExt;
 use mozaic_core::Token;
@@ -139,7 +139,7 @@ impl ConnectionHandler {
 
                     if player.connection_count == 1 {
                         // update required
-                        Some(StrippedPlayer::from(player.clone()))
+                        Some(PlayerData::from(player.clone()))
                     } else {
                         None
                     }
@@ -167,7 +167,7 @@ impl ConnectionHandler {
 
                         if player.connection_count == 0 {
                             // update required
-                            Some(StrippedPlayer::from(player.clone()))
+                            Some(PlayerData::from(player.clone()))
                         } else {
                             None
                         }
