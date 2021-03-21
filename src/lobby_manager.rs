@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex}};
 
 use chrono::{DateTime, Utc};
-use mozaic_core::Token;
+use mozaic_core::{Token, client::runner::Bot};
 use rand::Rng;
 use serde::{Serialize, Deserialize};
 
@@ -31,7 +31,26 @@ impl LobbyManager {
     }
 
     pub fn create_lobby(&mut self, config: LobbyConfig) -> Lobby {
-        let lobby: Lobby = config.into();
+        let mut lobby: Lobby = config.into();
+        
+        // TODO: dedup, ugh
+        let player_id = lobby.next_player_id;
+        lobby.next_player_id += 1;
+        lobby.players.insert(player_id, Player {
+            id: player_id,
+            name: "simplebot".to_string(),
+            player_type: PlayerType::Internal {
+                bot: Bot {
+                    argv: vec!["python3".to_string(), "bots/simple.py".to_string()]
+                }
+            },
+            // TODO: remove these fields for internal players
+            connection_count: 1,
+            client_connected: true,
+
+        });
+
+        
         self.lobbies.insert(lobby.id.clone(), lobby.clone());
         lobby
     }
@@ -115,10 +134,20 @@ pub struct Player {
     /// Scoped in lobby
     pub id: usize,
     pub name: String,
-    pub token: Token,
+
+    pub player_type: PlayerType,
+
     pub connection_count: usize,
     pub client_connected: bool,
 }
+
+// TODO: naming
+#[derive(Debug, Clone)]
+pub enum PlayerType {
+    External { token: Token },
+    Internal { bot: Bot },
+}
+
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Proposal {

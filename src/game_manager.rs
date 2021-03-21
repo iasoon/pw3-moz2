@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::{FutureExt, StreamExt, stream};
 use io::{BufRead, BufReader};
-use mozaic_core::{EventBus, GameServer, MatchCtx, MsgStreamHandle, Token, client_manager::{ClientHandle, ClientMgrHandle}, match_context::PlayerHandle, msg_stream::msg_stream};
+use mozaic_core::{EventBus, GameServer, MatchCtx, MsgStreamHandle, Token, client::{local_runner::run_local_bot, runner::Bot}, client_manager::ClientMgrHandle, match_context::PlayerHandle, msg_stream::msg_stream};
 use rand::Rng;
 
 use crate::{planetwars::{self, MatchConfig}};
@@ -61,19 +61,35 @@ fn gen_match_id() -> String {
     hex::encode(&id)
 }
 
+pub enum MatchPlayer {
+    Internal(Bot),
+    External(Token),
+}
+
 async fn run_match(
-    mut clients: Vec<ClientHandle>,
+    players: Vec<MatchPlayer>,
     serv: GameServer,
     config: planetwars::MatchConfig,
     log: MsgStreamHandle<String>)
 {
     let event_bus = Arc::new(Mutex::new(EventBus::new()));
-    let players = stream::iter(clients.iter_mut().enumerate())
-        .then(|(i, client)| {
-            let player_token: Token = rand::thread_rng().gen();
+    let players = stream::iter(players.into_iter().enumerate())
+        .then(|(i, player)| {
             let player_id = (i+1) as u32;
-            let player = serv.conn_table().open_connection(player_token, player_id, event_bus.clone());
-            client.run_player(player_token).map(move |_| (player_id, Box::new(player) as Box<dyn PlayerHandle>))
+            match player {
+                MatchPlayer::Internal(bot) => {
+                    let player_handle = run_local_bot(player_id, event_bus.clone(), bot);
+                    futures::future::ready((player_id, Box::new(player_handle) as Box<dyn PlayerHandle>)).boxed()
+                },
+                MatchPlayer::External(token) => {
+                    let player_token: Token = rand::thread_rng().gen();
+
+                    let player_handle = serv.conn_table().open_connection(player_token, player_id, event_bus.clone());
+                    serv.get_client(&token)
+                        .run_player(player_token)
+                        .map(move |_| (player_id, Box::new(player_handle) as Box<dyn PlayerHandle>)).boxed()
+                }
+            }
         }).collect().await;
     
     let match_ctx = MatchCtx::new(event_bus, players, log);
@@ -81,20 +97,17 @@ async fn run_match(
     pw_match.run().await;
 }
 
+
 // TODO: this function is very weird.
 pub fn create_match<F>(
     game_mgr: Arc<Mutex<GameManager>>,
-    tokens: Vec<Token>,
+    players: Vec<MatchPlayer>,
     match_config: MatchConfig,
     callback: F
 ) -> String
     where F: 'static + Send + Sync + FnOnce(String) -> ()
 {
     let mut mgr = game_mgr.lock().unwrap();
-
-    let clients = tokens.iter().map(|token| {
-        mgr.game_server.get_client(&token)
-    }).collect::<Vec<_>>();
 
     let match_id = gen_match_id();
     let mut log = msg_stream();
@@ -107,7 +120,7 @@ pub fn create_match<F>(
     let cb_match_id = match_id.clone();
     let cb_game_mgr = game_mgr.clone();
     tokio::spawn(run_match(
-        clients,
+        players,
         mgr.game_server.clone(),
         match_config,
         log.clone()).map(move |_| {

@@ -22,7 +22,7 @@ use std::collections::HashSet;
 
 use hex::FromHex;
 
-use game_manager::{GameManager, MatchData, create_match, read_match_log_from_disk};
+use game_manager::{GameManager, MatchData, MatchPlayer, create_match, read_match_log_from_disk};
 
 const MAPS_DIRECTORY: &'static str = "maps";
 
@@ -231,15 +231,15 @@ fn join_lobby(req: LobbyRequestCtx, player_params: PlayerParams)
         let player = Player {
             id: player_id,
             name: player_params.name,
-            token: player_params.token.clone(),
-            // TODO?
+            player_type: PlayerType::External { token: player_params.token.clone() },
+            // TODO: this is where the connection count underflow bug comes from, I think
             connection_count: 0,
             client_connected: game_manager
                 .lock()
                 .unwrap()
-                .client_connected(&player_params.token)
+                .client_connected(&player_params.token),
         };
-        lobby.token_player.insert(player.token.clone(), player_id);
+        lobby.token_player.insert(player_params.token.clone(), player_id);
         lobby.players.insert(player_id, player.clone());
         Ok(PlayerData::from(player))
     });
@@ -303,11 +303,17 @@ fn create_proposal(req: LobbyRequestCtx, params: ProposalParams)
             owner_id: creator_id,
             config: params.config,
             players: params.players.iter().map(|&player_id| {
-                let status = if player_id == creator_id {
-                    AcceptedState::Accepted
-                } else {
-                    AcceptedState::Unanswered
-                };
+                let mut status = AcceptedState::Unanswered;
+                if player_id == creator_id {
+                    status = AcceptedState::Accepted;
+                }
+
+                let player = lobby.players.get(&player_id)
+                    .expect("player does not exist");
+
+                if let PlayerType::Internal { .. } = player.player_type {
+                    status = AcceptedState::Accepted;
+                }
 
                 ProposalPlayer {
                     player_id,
@@ -350,7 +356,7 @@ fn start_proposal(req: LobbyRequestCtx, proposal_id: String) -> Response {
             _ => return Err(LobbyApiError::ProposalExpired)
         }
 
-        let mut tokens = vec![];
+        let mut players = vec![];
 
         for accepting_player in proposal.players.iter() {
             // player should exist. TODO: maybe make this more safe?
@@ -360,14 +366,24 @@ fn start_proposal(req: LobbyRequestCtx, proposal_id: String) -> Response {
                 return Err(LobbyApiError::ProposalNotReady);
             }
 
-            tokens.push(player.token);
+            let match_player = match &player.player_type {
+                PlayerType::External { token } => {
+                    MatchPlayer::External(token.clone())
+                }
+                PlayerType::Internal { bot } => {
+                    MatchPlayer::Internal(bot.clone())
+                }
+            };
+
+            players.push(match_player);
+
         }
 
         let match_config = proposal.config.clone();
 
         let cb_mgr = manager.clone();
         let cb_lobby_id = lobby.id.clone();
-        let match_id = create_match(game_manager, tokens, match_config.clone(), move |match_id| {
+        let match_id = create_match(game_manager, players, match_config.clone(), move |match_id| {
             let mut mgr = cb_mgr.lock().unwrap();
             mgr.lobbies.get_mut(&cb_lobby_id).and_then(|lobby| {
                 if let Some(match_meta) = lobby.matches.get_mut(&match_id) {
