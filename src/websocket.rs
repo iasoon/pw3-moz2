@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 
-use crate::{LobbyData, LobbyEvent, LobbyManager, MatchLogEvent, PlayerData, game_manager::MatchData};
+use crate::{LobbyData, LobbyEvent, LobbyManager, MatchLogEvent, PlayerData, game_manager::MatchData, lobby_manager::PlayerType};
 use futures::{StreamExt, future};
 use futures::FutureExt;
 use mozaic_core::Token;
@@ -131,18 +131,19 @@ impl ConnectionHandler {
             // TODO: log, error, ANYTHING
 
             match lobby.token_player.get(&req.token) {
-                None => return,
-                Some(&player_id) => {
+                None => None,
+                Some(&player_id ) => {
                     self.authenticated_players.push((req.lobby_id.clone(), player_id));
-                    let player = lobby.players.get_mut(&player_id).unwrap();
-                    player.connection_count += 1;
-
-                    if player.connection_count == 1 {
-                        // update required
-                        Some(PlayerData::from(player.clone()))
-                    } else {
+                    lobby.players.get_mut(&player_id).and_then(|player| {
+                        if let PlayerType::External(ref mut external) = player.player_type {
+                            external.connection_count += 1;
+                            if external.connection_count == 1 {
+                                // update required
+                                return Some(PlayerData::from(player.clone()));
+                            }
+                        }
                         None
-                    }
+                    })
                 }
             }
         };
@@ -159,18 +160,20 @@ impl ConnectionHandler {
                 None => continue,
                 Some(lobby) => {
                     lobby.players.get_mut(&player_id).and_then(|player| {
-                        // It should not happen that this condition is false, but it does,
-                        // and it crashes the server. Please help.
-                        if player.connection_count > 0 {
-                            player.connection_count -= 1;
-                        }
+                        if let PlayerType::External(ref mut external) = player.player_type {
+                            // It should not happen that this condition is false, but it does,
+                            // and it crashes the server. Please help.
+                            if external.connection_count > 0 {
+                                external.connection_count -= 1;
+                            }
+    
+                            if external.connection_count == 0 {
+                                // update required
+                                return Some(PlayerData::from(player.clone()))
+                            }
 
-                        if player.connection_count == 0 {
-                            // update required
-                            Some(PlayerData::from(player.clone()))
-                        } else {
-                            None
                         }
+                        return None;
                     })
                 }
             };

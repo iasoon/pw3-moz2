@@ -44,10 +44,6 @@ impl LobbyManager {
                     argv: vec!["python3".to_string(), "bots/simple.py".to_string()]
                 }
             },
-            // TODO: remove these fields for internal players
-            connection_count: 1,
-            client_connected: true,
-
         });
 
         
@@ -79,9 +75,15 @@ fn set_client_connected(lobby_mgr: &Arc<Mutex<LobbyManager>>, token: &Token, val
     };
     for (lobby_id, player_id) in token_players {
         let updated = mgr.lobbies.get_mut(&lobby_id).and_then(|lobby| {
-            lobby.players.get_mut(&player_id).map(|player| {
-                player.client_connected = value;
-                PlayerData::from(player.clone())
+            lobby.players.get_mut(&player_id).and_then(|player| {
+                match player.player_type {
+                    PlayerType::External(ref mut external) => {
+                        external.client_connected = value;
+                        Some(PlayerData::from(player.clone()))
+                    }
+                    _ => None,
+                }
+
             })
         });
         if let Some(player_data) = updated {
@@ -136,16 +138,20 @@ pub struct Player {
     pub name: String,
 
     pub player_type: PlayerType,
-
-    pub connection_count: usize,
-    pub client_connected: bool,
 }
 
 // TODO: naming
 #[derive(Debug, Clone)]
 pub enum PlayerType {
-    External { token: Token },
+    External(ExternalPlayer),
     Internal { bot: Bot },
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternalPlayer {
+    pub token: Token,
+    pub connection_count: usize,
+    pub client_connected: bool,
 }
 
 
@@ -256,12 +262,26 @@ impl From<Lobby> for LobbyData {
 }
 
 impl From<Player> for PlayerData {
+    // TODO: 
     fn from(player: Player) -> PlayerData {
-        PlayerData {
-            id: player.id,
-            name: player.name,
-            connected: player.connection_count > 0,
-            client_connected: player.client_connected,
+        match player.player_type {
+            PlayerType::Internal { .. } => {
+                PlayerData {
+                    id: player.id,
+                    name: player.name,
+                    connected: true,
+                    client_connected: true,
+                }
+            }
+            PlayerType::External(external) => {
+                PlayerData {
+                    id: player.id,
+                    name: player.name,
+                    connected: external.connection_count > 0,
+                    client_connected: external.client_connected,
+                }
+        
+            }
         }
     }
 }

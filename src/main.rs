@@ -231,13 +231,16 @@ fn join_lobby(req: LobbyRequestCtx, player_params: PlayerParams)
         let player = Player {
             id: player_id,
             name: player_params.name,
-            player_type: PlayerType::External { token: player_params.token.clone() },
-            // TODO: this is where the connection count underflow bug comes from, I think
-            connection_count: 0,
-            client_connected: game_manager
+            player_type: PlayerType::External(ExternalPlayer {
+                token: player_params.token.clone(),
+
+                // TODO: this zero is where the connection count underflow bug comes from, I think
+                connection_count: 0,
+                client_connected: game_manager
                 .lock()
                 .unwrap()
                 .client_connected(&player_params.token),
+            }),
         };
         lobby.token_player.insert(player_params.token.clone(), player_id);
         lobby.players.insert(player_id, player.clone());
@@ -362,13 +365,18 @@ fn start_proposal(req: LobbyRequestCtx, proposal_id: String) -> Response {
             // player should exist. TODO: maybe make this more safe?
             let player = lobby.players.get(&accepting_player.player_id).unwrap();
 
-            if accepting_player.status != AcceptedState::Accepted || !player.client_connected {
+            if accepting_player.status != AcceptedState::Accepted {
                 return Err(LobbyApiError::ProposalNotReady);
             }
+            
 
             let match_player = match &player.player_type {
-                PlayerType::External { token } => {
-                    MatchPlayer::External(token.clone())
+                PlayerType::External(external) => {
+                    if !external.client_connected {
+                        return Err(LobbyApiError::ProposalNotReady);
+                    }
+
+                    MatchPlayer::External(external.token.clone())
                 }
                 PlayerType::Internal { bot } => {
                     MatchPlayer::Internal(bot.clone())
